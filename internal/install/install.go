@@ -530,7 +530,8 @@ func Install(ctx context.Context, opts Options) error {
 	if _, err := managedWrite(&record, p.Plist, renderPlist(p), oldPlist); err != nil {
 		return err
 	}
-	if err := startService(ctx, launchctl, p, false); err != nil {
+	bootstrappedEarly, err := startService(ctx, launchctl, p, false)
+	if err != nil {
 		return err
 	}
 	status, err := waitController(ctx, p)
@@ -622,7 +623,9 @@ func Install(ctx context.Context, opts Options) error {
 	// An interrupted earlier run may have enabled the provider on disk but
 	// died before restarting; only the combined change signal makes the
 	// restart decision correct on resume.
-	configChanged := configChangedEarly || configChangedLate
+	// A freshly bootstrapped controller has already loaded the early
+	// config; restarting again would kill provider work it just started.
+	needsRestart := configChangedLate || (configChangedEarly && !bootstrappedEarly)
 	if err := saveInstallation(p, record); err != nil {
 		return err
 	}
@@ -630,17 +633,17 @@ func Install(ctx context.Context, opts Options) error {
 	// including any in-flight provider clone holding its inherited lock. A
 	// same-release repeat install with unchanged files must therefore NOT
 	// restart; only a real content change (or a stopped service) does.
-	if configChanged {
-		if err := startService(ctx, launchctl, p, true); err != nil {
+	if needsRestart {
+		if _, err := startService(ctx, launchctl, p, true); err != nil {
 			return err
 		}
-	} else if err := startService(ctx, launchctl, p, false); err != nil {
+	} else if _, err := startService(ctx, launchctl, p, false); err != nil {
 		return err
 	}
 	if _, err := waitController(ctx, p); err != nil {
 		return err
 	}
-	if err := checkProvider(ctx, p); err != nil {
+	if err := ensureProvider(ctx, launchctl, p); err != nil {
 		return err
 	}
 	info, err = readController(ctx, p, record.ControllerID)

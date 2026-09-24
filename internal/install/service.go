@@ -175,18 +175,22 @@ func launchStatus(ctx context.Context, launchctl string) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("reading LaunchAgent status: %w", err)
 }
 
-func startService(ctx context.Context, launchctl string, p Paths, restart bool) error {
+// startService ensures the controller is running and returns whether it
+// BOOTSTRAPPED the job (it was not loaded before). A freshly bootstrapped
+// process has already loaded the current on-disk configuration, so callers
+// must not treat pre-existing config changes as needing another restart.
+func startService(ctx context.Context, launchctl string, p Paths, restart bool) (bool, error) {
 	status, loaded, err := launchStatus(ctx, launchctl)
 	if err != nil {
-		return err
+		return false, err
 	}
 	pid, err := launchPID(status)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !loaded {
 		if _, err := outputCommand(ctx, launchctl, "bootstrap", launchDomain(), p.Plist); err != nil {
-			return fmt.Errorf("bootstrap LaunchAgent: %w", err)
+			return false, fmt.Errorf("bootstrap LaunchAgent: %w", err)
 		}
 	}
 	args := []string{"kickstart"}
@@ -195,12 +199,12 @@ func startService(ctx context.Context, launchctl string, p Paths, restart bool) 
 	}
 	args = append(args, launchTarget())
 	if _, err := outputCommand(ctx, launchctl, args...); err != nil {
-		return fmt.Errorf("kickstart LaunchAgent: %w", err)
+		return false, fmt.Errorf("kickstart LaunchAgent: %w", err)
 	}
 	if restart {
-		return waitProcessExit(ctx, pid)
+		return false, waitProcessExit(ctx, pid)
 	}
-	return nil
+	return !loaded, nil
 }
 
 func stopService(ctx context.Context, launchctl string) error {

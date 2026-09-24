@@ -154,6 +154,25 @@ func validateControllerCA(p Paths, info controllerInfo) error {
 	return nil
 }
 
+// ensureProvider verifies the provider registration. If the RUNNING
+// controller predates the on-disk provider config (a previous run died
+// between the final write and its restart), restart once and re-check
+// before failing; a fresh identical config must not loop on restarts
+// because checkProvider succeeding short-circuits this entirely.
+func ensureProvider(ctx context.Context, launchctl string, p Paths) error {
+	err := checkProvider(ctx, p)
+	if err == nil {
+		return nil
+	}
+	if _, restartErr := startService(ctx, launchctl, p, true); restartErr != nil {
+		return errors.Join(err, restartErr)
+	}
+	if _, waitErr := waitController(ctx, p); waitErr != nil {
+		return errors.Join(err, waitErr)
+	}
+	return checkProvider(ctx, p)
+}
+
 func checkProvider(ctx context.Context, p Paths) error {
 	var providers []struct {
 		Name string `json:"name"`
