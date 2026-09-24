@@ -1,0 +1,10 @@
+# Build outputs
+/garm-orbstack
+/garm-provider-orbstack
+/bin/
+/dist/
+
+# Local development scratch
+*.local.toml
+/.idea/
+/.vscode/

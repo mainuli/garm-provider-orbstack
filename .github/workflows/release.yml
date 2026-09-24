@@ -1,0 +1,119 @@
+name: Native macOS prerelease
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: macos-15
+    # Trusted maintainers create tags only after gates 1–2 and independent
+    # code review of this exact integrated commit. Promotion follows gates 3–9.
+    env:
+      GARM_TAG: v0.2.1
+      GARM_COMMIT: 154638445c3949c1958b01812f69d9a1e4d82684
+      CGO_ENABLED: '0'
+    steps:
+      - name: Check out the integration tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select the pinned Go toolchain
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+      - name: Validate the immutable integrated candidate
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'A release already exists; never reuse a candidate version.' >&2
+            exit 1
+          fi
+          test -z "$(git ls-files '*.go' | xargs gofmt -l)"
+          go build ./cmd/garm-orbstack ./cmd/garm-provider-orbstack
+          CGO_ENABLED=1 go test -race ./...
+      - name: Check out exact upstream GARM source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: cloudbase/garm
+          ref: 154638445c3949c1958b01812f69d9a1e4d82684
+          path: upstream-garm
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify upstream tag and build unpatched controller binaries
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$(git -C upstream-garm rev-parse HEAD)" = "$GARM_COMMIT"
+          test "$(git -C upstream-garm rev-parse "$GARM_TAG^{commit}")" = "$GARM_COMMIT"
+          mkdir dist
+          source="cloudbase/garm $GARM_TAG ($GARM_COMMIT)"
+          upstream_ldflags="-s -w -X 'github.com/cloudbase/garm/util/appdefaults.Version=$source'"
+          for arch in arm64 amd64; do
+            clang_arch=$arch
+            if [ "$arch" = amd64 ]; then clang_arch=x86_64; fi
+            (cd upstream-garm && GOOS=darwin GOARCH="$arch" CGO_ENABLED=1 CC="clang -arch $clang_arch" \
+              go build -mod=vendor -trimpath -tags osusergo,netgo,sqlite_omit_load_extension \
+              -ldflags "$upstream_ldflags" -o "../dist/garm_${TAG}_darwin_${arch}" ./cmd/garm)
+          done
+      - name: Apply the recorded CLI-only CA transport patch and build all remaining binaries
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git -C upstream-garm apply --check "$GITHUB_WORKSPACE/patches/garm-cli-ca-bundle-env.patch"
+          git -C upstream-garm apply "$GITHUB_WORKSPACE/patches/garm-cli-ca-bundle-env.patch"
+          test "$(git -C upstream-garm diff --name-only)" = cmd/garm-cli/cmd/root.go
+          source="cloudbase/garm $GARM_TAG ($GARM_COMMIT)"
+          upstream_ldflags="-s -w -X 'github.com/cloudbase/garm/util/appdefaults.Version=$source'"
+          our_ldflags="-s -w -X github.com/mainuli/garm-provider-orbstack/internal/releaseinfo.Version=$TAG -X 'github.com/mainuli/garm-provider-orbstack/internal/releaseinfo.GARMSource=$source'"
+          for arch in arm64 amd64; do
+            clang_arch=$arch
+            if [ "$arch" = amd64 ]; then clang_arch=x86_64; fi
+            (cd upstream-garm && GOOS=darwin GOARCH="$arch" CGO_ENABLED=1 CC="clang -arch $clang_arch" \
+              go build -mod=vendor -trimpath -tags osusergo,netgo,sqlite_omit_load_extension \
+              -ldflags "$upstream_ldflags" -o "../dist/garm-cli_${TAG}_darwin_${arch}" ./cmd/garm-cli)
+            for binary in garm-orbstack garm-provider-orbstack; do
+              GOOS=darwin GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "$our_ldflags" \
+                -o "dist/${binary}_${TAG}_darwin_${arch}" "./cmd/$binary"
+            done
+          done
+      - name: Record provenance and checksum every release asset
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          patch_sha=$(shasum -a 256 patches/garm-cli-ca-bundle-env.patch | cut -d ' ' -f 1)
+          go_version=$(go env GOVERSION)
+          jq -n --arg version "$TAG" --arg tag "$GARM_TAG" --arg commit "$GARM_COMMIT" \
+            --arg go_version "$go_version" --arg patch "$patch_sha" \
+            '{version:$version,garm_source:{tag:$tag,commit:$commit},go_version:$go_version,cli_patch_sha256:$patch}' \
+            > dist/release-lock.json
+          cp install.sh dist/install.sh
+          (cd dist && shasum -a 256 -- *_darwin_* release-lock.json install.sh > SHA256SUMS)
+      - name: Publish only a prerelease candidate
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --verify-tag --prerelease --latest=false --title "$TAG candidate" \
+            --notes 'Candidate only. Do not promote before gates 3–9 pass against these exact checksummed artifacts. Failed candidates stay prerelease/not-latest and must be marked withdrawn; never replace assets or reuse the version.' \
+            dist/garm-orbstack_*_darwin_* dist/garm-provider-orbstack_*_darwin_* \
+            dist/garm_*_darwin_* dist/garm-cli_*_darwin_* dist/release-lock.json dist/SHA256SUMS dist/install.sh
