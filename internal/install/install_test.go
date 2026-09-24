@@ -409,3 +409,44 @@ func TestOrbStackMinimumVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestManagedWriteAdoptsIdenticalContentAndDigestsCoverUpgrades covers the
+// resumed-install case: a file already identical to the wanted content is
+// adopted with a recorded digest, and a later version-change pre-check
+// accepts that content through the digest even with no byte-level fallback.
+func TestManagedWriteAdoptsIdenticalContentAndDigestsCoverUpgrades(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	wanted := []byte("render v2")
+	if err := os.WriteFile(path, wanted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var record installationRecord
+	changed, err := managedWrite(&record, path, wanted)
+	if err != nil || changed {
+		t.Fatalf("identical content: changed=%v err=%v", changed, err)
+	}
+	digest, ok := record.ManagedFiles[path]
+	if !ok || digest == "" {
+		t.Fatal("identical content must still record its digest")
+	}
+	// Version-change pre-check with drifted templates and no allowed bytes:
+	// the recorded digest alone must accept the file.
+	if err := checkManagedFiles(&record, []struct {
+		path    string
+		wanted  []byte
+		allowed [][]byte
+	}{{path, []byte("render v3"), nil}}); err != nil {
+		t.Fatalf("digest must cover version changes: %v", err)
+	}
+	// But foreign edits are still refused before anything is written.
+	if err := os.WriteFile(path, []byte("operator edit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkManagedFiles(&record, []struct {
+		path    string
+		wanted  []byte
+		allowed [][]byte
+	}{{path, []byte("render v3"), nil}}); err == nil {
+		t.Fatal("foreign edit must be refused")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -209,6 +210,14 @@ func managedWrite(record *installationRecord, path string, wanted []byte, allowe
 			return false, fmt.Errorf("refusing to overwrite changed/unmanaged file %s", path)
 		}
 		if bytes.Equal(old, wanted) {
+			// Adopt identical pre-existing content: a resumed install may
+			// have written this file before the record was first saved, and
+			// without a recorded digest every future version change would
+			// refuse to replace it.
+			if record.ManagedFiles == nil {
+				record.ManagedFiles = map[string]string{}
+			}
+			record.ManagedFiles[path] = contentDigest(wanted)
 			return false, nil
 		}
 	case errors.Is(err, os.ErrNotExist):
@@ -390,7 +399,7 @@ func Install(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
-		if current.Version != record.Version || current.ControllerID != record.ControllerID || current.Backup != record.Backup || current.PreviousVersion != record.PreviousVersion {
+		if current.Version != record.Version || current.ControllerID != record.ControllerID || current.Backup != record.Backup || current.PreviousVersion != record.PreviousVersion || !maps.Equal(current.ManagedFiles, record.ManagedFiles) {
 			return errors.New("installation changed during preflight; rerun")
 		}
 	} else {
@@ -415,24 +424,33 @@ func Install(ctx context.Context, opts Options) error {
 		}
 		// Refuse the upgrade BEFORE stopping the controller if any managed
 		// file is no longer recognizably ours.
-		preSecrets, preSecretsErr := ensureSecrets(p)
+		// Read-only: the pre-check must never generate secrets. A missing
+		// secrets directory with an existing database is a rotation refusal
+		// that the later guards enforce; generating here would bypass them.
+		preSecrets, preSecretsErr := loadSecrets(p)
 		if preSecretsErr != nil {
 			return preSecretsErr
 		}
 		_, preHostErr := config.LoadHost(p.HostConfig)
 		preHasHost := preHostErr == nil
-		var prevConfig, prevPlist []byte
-		if record.PreviousVersion != "" {
-			previous, _ := pathsFor(p.Home, p.HostConfig, record.PreviousVersion)
-			prevConfig, prevPlist = renderGARMConfig(previous, preSecrets, true), renderPlist(previous)
+		// The currently INSTALLED release wrote the on-disk files; accept
+		// its renders (and the one before it, mid-upgrade resumes) even
+		// after our templates drift. record.Version is the installed one
+		// here because the swap to the new version happens only below.
+		installed, _ := pathsFor(p.Home, p.HostConfig, record.Version)
+		prevConfig, prevPlist := renderGARMConfig(installed, preSecrets, true), renderPlist(installed)
+		var extraConfig, extraPlist []byte
+		if record.PreviousVersion != "" && record.PreviousVersion != record.Version {
+			older, _ := pathsFor(p.Home, p.HostConfig, record.PreviousVersion)
+			extraConfig, extraPlist = renderGARMConfig(older, preSecrets, true), renderPlist(older)
 		}
 		if err := checkManagedFiles(&record, []struct {
 			path    string
 			wanted  []byte
 			allowed [][]byte
 		}{
-			{p.GARMConfig, renderGARMConfig(p, preSecrets, preHasHost), [][]byte{renderGARMConfig(p, preSecrets, false), prevConfig}},
-			{p.Plist, renderPlist(p), [][]byte{prevPlist}},
+			{p.GARMConfig, renderGARMConfig(p, preSecrets, preHasHost), [][]byte{renderGARMConfig(p, preSecrets, false), prevConfig, extraConfig}},
+			{p.Plist, renderPlist(p), [][]byte{prevPlist, extraPlist}},
 		}); err != nil {
 			return err
 		}
@@ -505,7 +523,8 @@ func Install(ctx context.Context, opts Options) error {
 		previous, _ := pathsFor(p.Home, p.HostConfig, record.PreviousVersion)
 		oldConfig, oldPlist = renderGARMConfig(previous, secrets, true), renderPlist(previous)
 	}
-	if _, err := managedWrite(&record, p.GARMConfig, renderGARMConfig(p, secrets, hasHost), renderGARMConfig(p, secrets, false), oldConfig); err != nil {
+	configChangedEarly, err := managedWrite(&record, p.GARMConfig, renderGARMConfig(p, secrets, hasHost), renderGARMConfig(p, secrets, false), oldConfig)
+	if err != nil {
 		return err
 	}
 	if _, err := managedWrite(&record, p.Plist, renderPlist(p), oldPlist); err != nil {
@@ -596,10 +615,14 @@ func Install(ctx context.Context, opts Options) error {
 	if err := saveInstallation(p, record); err != nil {
 		return err
 	}
-	configChanged, err := managedWrite(&record, p.GARMConfig, renderGARMConfig(p, secrets, true), renderGARMConfig(p, secrets, false))
+	configChangedLate, err := managedWrite(&record, p.GARMConfig, renderGARMConfig(p, secrets, true), renderGARMConfig(p, secrets, false))
 	if err != nil {
 		return err
 	}
+	// An interrupted earlier run may have enabled the provider on disk but
+	// died before restarting; only the combined change signal makes the
+	// restart decision correct on resume.
+	configChanged := configChangedEarly || configChangedLate
 	if err := saveInstallation(p, record); err != nil {
 		return err
 	}
