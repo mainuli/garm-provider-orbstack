@@ -154,15 +154,26 @@ func validateControllerCA(p Paths, info controllerInfo) error {
 	return nil
 }
 
-// ensureProvider verifies the provider registration. If the RUNNING
-// controller predates the on-disk provider config (a previous run died
-// between the final write and its restart), restart once and re-check
-// before failing; a fresh identical config must not loop on restarts
-// because checkProvider succeeding short-circuits this entirely.
+// errProviderNotRegistered is returned ONLY when the controller answered
+// `provider list` successfully and the orbstack entry is absent. It is the
+// sole condition that may justify restarting the controller: a query
+// failure (timeout, TLS, auth, malformed output) must NEVER restart,
+// because a kickstart -k kills the controller's process group including
+// any in-flight provider clone holding its inherited lock.
+var errProviderNotRegistered = errors.New("controller has not registered the orbstack external provider")
+
+// ensureProvider verifies the provider registration. Only a PROVEN absent
+// registration (successful provider-list response without the orbstack
+// entry — i.e. the running controller predates the on-disk provider
+// config after an interrupted install) triggers one restart and re-check.
+// Query errors fail without touching the running controller.
 func ensureProvider(ctx context.Context, launchctl string, p Paths) error {
 	err := checkProvider(ctx, p)
 	if err == nil {
 		return nil
+	}
+	if !errors.Is(err, errProviderNotRegistered) {
+		return err
 	}
 	if _, restartErr := startService(ctx, launchctl, p, true); restartErr != nil {
 		return errors.Join(err, restartErr)
@@ -178,14 +189,14 @@ func checkProvider(ctx context.Context, p Paths) error {
 		Name string `json:"name"`
 	}
 	if err := cliJSON(ctx, p, &providers, "provider", "list"); err != nil {
-		return err
+		return fmt.Errorf("querying controller providers (no restart): %w", err)
 	}
 	for _, provider := range providers {
 		if provider.Name == "orbstack" {
 			return nil
 		}
 	}
-	return errors.New("controller has not registered the orbstack external provider")
+	return errProviderNotRegistered
 }
 
 type commandClass struct {
