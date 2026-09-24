@@ -1,0 +1,63 @@
+--- a/cmd/garm-cli/cmd/root.go
++++ b/cmd/garm-cli/cmd/root.go
+@@ -15,11 +15,14 @@
+ package cmd
+ 
+ import (
++	"crypto/tls"
++	"crypto/x509"
+ 	"encoding/json"
+ 	"fmt"
+ 	"net/http"
+ 	"net/url"
+ 	"os"
++	"path/filepath"
+ 	"time"
+ 
+ 	"github.com/go-openapi/runtime"
+@@ -62,6 +65,12 @@
+ // Execute adds all child commands to the root command and sets flags appropriately.
+ // This is called by main.main(). It only needs to happen once to the rootCmd.
+ func Execute() {
++	if path := os.Getenv("GARM_CLI_CA_BUNDLE"); path != "" {
++		if err := appendCLITransportCA(path); err != nil {
++			fmt.Fprintln(os.Stderr, "GARM_CLI_CA_BUNDLE:", err)
++			os.Exit(1)
++		}
++	}
+ 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug on all API calls")
+ 	rootCmd.PersistentFlags().Var(&outputFormat, "format", "Output format (table, json)")
+ 
+@@ -71,6 +80,32 @@
+ 	if err != nil {
+ 		os.Exit(1)
+ 	}
++}
++
++func appendCLITransportCA(path string) error {
++	if !filepath.IsAbs(path) {
++		return fmt.Errorf("CA bundle path must be absolute")
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return err
++	}
++	roots, err := x509.SystemCertPool()
++	if err != nil {
++		return err
++	}
++	if !roots.AppendCertsFromPEM(data) {
++		return fmt.Errorf("CA bundle contains no valid PEM certificates")
++	}
++	transport := http.DefaultTransport.(*http.Transport).Clone()
++	if transport.TLSClientConfig == nil {
++		transport.TLSClientConfig = &tls.Config{}
++	} else {
++		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
++	}
++	transport.TLSClientConfig.RootCAs = roots
++	http.DefaultTransport = transport
++	return nil
+ }
+ 
+ func initAPIClient(baseURL, token string) {

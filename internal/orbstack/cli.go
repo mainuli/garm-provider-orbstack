@@ -131,6 +131,9 @@ func (c *Client) Info(ctx context.Context, idOrName string) (Info, error) {
 	if err := json.Unmarshal(out, &info); err != nil {
 		return Info{}, fmt.Errorf("decoding orbctl info output: %w", err)
 	}
+	if info.Record.ID == "" || info.Record.Name == "" {
+		return Info{}, fmt.Errorf("orbstack: info for %s returned an empty record", idOrName)
+	}
 	return info, nil
 }
 
@@ -143,6 +146,22 @@ func (c *Client) List(ctx context.Context) ([]Machine, error) {
 	var machines []Machine
 	if err := json.Unmarshal(out, &machines); err != nil {
 		return nil, fmt.Errorf("decoding orbctl list output: %w", err)
+	}
+	if machines == nil {
+		// JSON "null" decodes to a nil slice and would masquerade as a
+		// successful empty inventory; release decisions require a
+		// complete successful inventory, so reject it.
+		return nil, fmt.Errorf("orbstack: list returned null inventory (%q)", firstLine(string(out)))
+	}
+	seen := make(map[string]struct{}, len(machines))
+	for _, m := range machines {
+		if m.ID == "" || m.Name == "" {
+			return nil, fmt.Errorf("orbstack: list returned a machine with empty ID or name")
+		}
+		if _, dup := seen[m.ID]; dup {
+			return nil, fmt.Errorf("orbstack: list returned duplicate machine ID %s", m.ID)
+		}
+		seen[m.ID] = struct{}{}
 	}
 	return machines, nil
 }
@@ -362,6 +381,28 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// Version returns the OrbStack version string (for example "2.2.3") via
+// the probe-verified `orbctl version` output ("Version: 2.2.3 (2020300)").
+func (c *Client) Version(ctx context.Context) (string, error) {
+	out, err := c.runOutput(ctx, "version")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "Version:"); ok {
+			ver := strings.TrimSpace(rest)
+			if i := strings.IndexByte(ver, ' '); i >= 0 {
+				ver = ver[:i]
+			}
+			if ver != "" {
+				return ver, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("orbstack: could not parse version output %q", strings.TrimSpace(string(out)))
 }
 
 // WaitForState polls the machine inventory until the machine reaches the
