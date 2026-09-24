@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mainuli/garm-provider-orbstack/internal/config"
@@ -13,10 +15,25 @@ import (
 )
 
 func templateConfigPath(path string) (string, error) {
-	if path != "" {
-		return path, nil
+	if path == "" {
+		return config.DefaultHostPath()
 	}
-	return config.DefaultHostPath()
+	// The plan has a single canonical host config per owner. Resolve and
+	// enforce that BEFORE any OrbStack work: a relative or stray path must
+	// fail here, not after an hour of provisioning an unregisterable
+	// template.
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	defaultPath, err := config.DefaultHostPath()
+	if err != nil {
+		return "", err
+	}
+	if filepath.Clean(resolved) != filepath.Clean(defaultPath) {
+		return "", fmt.Errorf("--config must name the single managed host configuration %s", defaultPath)
+	}
+	return resolved, nil
 }
 
 func runTemplateBuild(ctx context.Context, args []string) error {

@@ -41,6 +41,11 @@ func Doctor(ctx context.Context, configPath string) error {
 	if err := ValidateReleaseMetadata(); err != nil {
 		return &DiagnosticError{1, err}
 	}
+	if releaseinfo.GARMSource != "" {
+		// The version command is a machine-readable contract (bare tag),
+		// so provenance is reported here instead.
+		fmt.Fprintln(os.Stdout, "garm source:", releaseinfo.GARMSource)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return &DiagnosticError{1, err}

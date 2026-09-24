@@ -113,6 +113,9 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 	if machineID == "" || info.Record.Name != machineName {
 		return Manifest{}, errors.New("template identity is uncertain; inspect the newly created machine")
 	}
+	// Record the version label OrbStack assigns ("noble" for Ubuntu 24.04
+	// on 2.2.3); validation compares clones against this observed value.
+	osVersion := info.Record.Image.Version
 	fail := func(cause error) (Manifest, error) {
 		// A build failure is inspectable and never starts an unsealed machine
 		// again automatically. Stop only the ID returned by our create.
@@ -170,7 +173,7 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 		return fail(err)
 	}
 	manifest := Manifest{SchemaVersion: SchemaVersion, ImageID: imageID, MachineID: machineID,
-		RecipeSHA256: recipeHash, Arch: options.Arch, RunnerFilename: filename,
+		OSVersion: osVersion, RecipeSHA256: recipeHash, Arch: options.Arch, RunnerFilename: filename,
 		RunnerSHA256: strings.ToLower(options.RunnerSHA256), OrbStackVersion: version, Packages: packages}
 	metadata, err := json.Marshal(manifest)
 	if err != nil {

@@ -12,9 +12,14 @@ const SchemaVersion = 1
 // written next to the registry when a template is built and registered, and
 // the same nonsecret metadata is recorded inside the template machine.
 type Manifest struct {
-	SchemaVersion   int               `json:"schema_version"`
-	ImageID         string            `json:"image_id"`
-	MachineID       string            `json:"machine_id"`
+	SchemaVersion int    `json:"schema_version"`
+	ImageID       string `json:"image_id"`
+	MachineID     string `json:"machine_id"`
+	// OSVersion is the version label OrbStack itself records for the
+	// template machine (for example "noble" for Ubuntu 24.04). Template
+	// validation compares against this observed value, never a hardcoded
+	// marketing version.
+	OSVersion       string            `json:"os_version"`
 	RecipeSHA256    string            `json:"recipe_sha256"`
 	Arch            string            `json:"arch"`
 	RunnerFilename  string            `json:"runner_filename"`

@@ -41,7 +41,10 @@ func pathsFor(home, hostConfig, version string) (Paths, error) {
 			return Paths{}, fmt.Errorf("--config must name the single managed host configuration %s", p.HostConfig)
 		}
 	}
-	p.GARMConfig = filepath.Join(p.ConfigDir, "garm/config.toml")
+	// The GARM config carries the JWT signing secret and database
+	// passphrase in plaintext, so it lives under the managed secrets tree,
+	// not the non-sensitive config directory.
+	p.GARMConfig = filepath.Join(p.Secrets, "garm-config.toml")
 	p.Record = filepath.Join(p.ConfigDir, "installation.json")
 	p.Secrets = filepath.Join(home, ".config/secrets/garm-orbstack")
 	p.CLIHome = filepath.Join(p.Secrets, "cli-home")

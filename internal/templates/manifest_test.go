@@ -16,7 +16,7 @@ import (
 )
 
 func validManifest() Manifest {
-	return Manifest{SchemaVersion: SchemaVersion, ImageID: "ubuntu-24.04-arm64-2.333.0-unique", MachineID: "template-id", RecipeSHA256: strings.Repeat("a", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", RunnerSHA256: strings.Repeat("b", 64), OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
+	return Manifest{SchemaVersion: SchemaVersion, ImageID: "ubuntu-24.04-arm64-2.333.0-unique", MachineID: "template-id", OSVersion: "noble", RecipeSHA256: strings.Repeat("a", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", RunnerSHA256: strings.Repeat("b", 64), OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
 }
 
 func TestManifestValidationAndImmutability(t *testing.T) {
@@ -80,7 +80,7 @@ func TestManifestValidationAndImmutability(t *testing.T) {
 
 func TestTemplateMustRemainStoppedIsolatedAndMatching(t *testing.T) {
 	manifest := validManifest()
-	baseline := orbstack.Machine{ID: manifest.MachineID, State: orbstack.StateStopped, Image: orbstack.Image{Distro: "ubuntu", Version: "24.04", Arch: "arm64"}, Config: orbstack.MachineConfig{Isolated: true}}
+	baseline := orbstack.Machine{ID: manifest.MachineID, State: orbstack.StateStopped, Image: orbstack.Image{Distro: "ubuntu", Version: "noble", Arch: "arm64"}, Config: orbstack.MachineConfig{Isolated: true}}
 	if err := ValidateMachine(manifest, baseline); err != nil {
 		t.Fatal(err)
 	}

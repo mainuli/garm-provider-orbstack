@@ -50,6 +50,9 @@ func validateManifest(m Manifest) error {
 	if !runnerVersionPattern.MatchString(version) {
 		return errors.New("runner archive version is not pinned")
 	}
+	if strings.TrimSpace(m.OSVersion) == "" || strings.ContainsAny(m.OSVersion, "\x00\r\n") {
+		return errors.New("template manifest lacks the OrbStack-recorded OS version")
+	}
 	if strings.TrimSpace(m.OrbStackVersion) == "" || len(m.Packages) == 0 {
 		return errors.New("template manifest lacks OrbStack or package provenance")
 	}
@@ -128,7 +131,7 @@ func ValidateMachine(manifest Manifest, machine orbstack.Machine) error {
 	if machine.ID != manifest.MachineID || machine.State != orbstack.StateStopped {
 		return errors.New("approved template must be present and stopped with its recorded ID")
 	}
-	if machine.Image.Distro != "ubuntu" || machine.Image.Version != "24.04" || machine.Image.Arch != manifest.Arch {
+	if machine.Image.Distro != "ubuntu" || machine.Image.Version != manifest.OSVersion || machine.Image.Arch != manifest.Arch {
 		return errors.New("template operating system does not match manifest")
 	}
 	if !machine.Config.Isolated || machine.Config.ForwardSSHAgent || machine.Config.IsolateNetwork {

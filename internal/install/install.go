@@ -3,6 +3,8 @@ package install
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,10 @@ type installationRecord struct {
 	HostConfig      string `json:"host_config"`
 	StateDir        string `json:"state_dir"`
 	Backup          string `json:"backup,omitempty"`
+	// ManagedFiles maps each managed file path to the SHA-256 of the exact
+	// content this installation wrote, so a later release accepts (and
+	// replaces) the prior release's files even after render templates drift.
+	ManagedFiles map[string]string `json:"managed_files,omitempty"`
 }
 
 func loadInstallation(p Paths) (installationRecord, error) {
@@ -173,26 +179,73 @@ func placeRelease(p Paths, release verifiedRelease) error {
 	return syncDir(parent)
 }
 
-func managedFile(path string, wanted []byte, allowed ...[]byte) error {
-	old, err := os.ReadFile(path)
-	if err == nil {
-		if bytes.Equal(old, wanted) {
-			return nil
-		}
-		found := false
-		for _, candidate := range allowed {
-			if bytes.Equal(old, candidate) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("refusing to overwrite changed/unmanaged file %s", path)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+func contentDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// acceptableManaged reports whether existing content may be replaced by us.
+func acceptableManaged(existing, wanted []byte, allowed [][]byte, recordedDigest string) bool {
+	if bytes.Equal(existing, wanted) {
+		return true
 	}
-	return atomicFile(path, wanted, 0o600)
+	for _, candidate := range allowed {
+		if bytes.Equal(existing, candidate) {
+			return true
+		}
+	}
+	return recordedDigest != "" && contentDigest(existing) == recordedDigest
+}
+
+// managedWrite writes wanted when the existing content is ours (identical,
+// an allowed previous render, or matching the digest recorded at write
+// time). It returns whether the content changed on disk.
+func managedWrite(record *installationRecord, path string, wanted []byte, allowed ...[]byte) (bool, error) {
+	recordedDigest := record.ManagedFiles[path]
+	old, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if !acceptableManaged(old, wanted, allowed, recordedDigest) {
+			return false, fmt.Errorf("refusing to overwrite changed/unmanaged file %s", path)
+		}
+		if bytes.Equal(old, wanted) {
+			return false, nil
+		}
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		return false, err
+	}
+	if err := atomicFile(path, wanted, 0o600); err != nil {
+		return false, err
+	}
+	if record.ManagedFiles == nil {
+		record.ManagedFiles = map[string]string{}
+	}
+	record.ManagedFiles[path] = contentDigest(wanted)
+	return true, nil
+}
+
+// checkManagedFiles verifies, WITHOUT writing, that every managed file is
+// acceptable for our replacement. The version-change flow runs this BEFORE
+// stopping the controller so a refusal never leaves it stopped.
+func checkManagedFiles(record *installationRecord, specs []struct {
+	path    string
+	wanted  []byte
+	allowed [][]byte
+}) error {
+	for _, spec := range specs {
+		old, err := os.ReadFile(spec.path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !acceptableManaged(old, spec.wanted, spec.allowed, record.ManagedFiles[spec.path]) {
+			return fmt.Errorf("managed file %s was changed by something else; refusing version change", spec.path)
+		}
+	}
+	return nil
 }
 
 func backupStopped(p Paths, version string) (string, error) {
@@ -337,7 +390,7 @@ func Install(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
-		if current != record {
+		if current.Version != record.Version || current.ControllerID != record.ControllerID || current.Backup != record.Backup || current.PreviousVersion != record.PreviousVersion {
 			return errors.New("installation changed during preflight; rerun")
 		}
 	} else {
@@ -359,6 +412,29 @@ func Install(ctx context.Context, opts Options) error {
 		}
 		if len(records) != 0 {
 			return errors.New("drain and remove managed runners before a version change")
+		}
+		// Refuse the upgrade BEFORE stopping the controller if any managed
+		// file is no longer recognizably ours.
+		preSecrets, preSecretsErr := ensureSecrets(p)
+		if preSecretsErr != nil {
+			return preSecretsErr
+		}
+		_, preHostErr := config.LoadHost(p.HostConfig)
+		preHasHost := preHostErr == nil
+		var prevConfig, prevPlist []byte
+		if record.PreviousVersion != "" {
+			previous, _ := pathsFor(p.Home, p.HostConfig, record.PreviousVersion)
+			prevConfig, prevPlist = renderGARMConfig(previous, preSecrets, true), renderPlist(previous)
+		}
+		if err := checkManagedFiles(&record, []struct {
+			path    string
+			wanted  []byte
+			allowed [][]byte
+		}{
+			{p.GARMConfig, renderGARMConfig(p, preSecrets, preHasHost), [][]byte{renderGARMConfig(p, preSecrets, false), prevConfig}},
+			{p.Plist, renderPlist(p), [][]byte{prevPlist}},
+		}); err != nil {
+			return err
 		}
 		if err := stopService(ctx, launchctl); err != nil {
 			return err
@@ -429,10 +505,10 @@ func Install(ctx context.Context, opts Options) error {
 		previous, _ := pathsFor(p.Home, p.HostConfig, record.PreviousVersion)
 		oldConfig, oldPlist = renderGARMConfig(previous, secrets, true), renderPlist(previous)
 	}
-	if err := managedFile(p.GARMConfig, renderGARMConfig(p, secrets, hasHost), renderGARMConfig(p, secrets, false), oldConfig); err != nil {
+	if _, err := managedWrite(&record, p.GARMConfig, renderGARMConfig(p, secrets, hasHost), renderGARMConfig(p, secrets, false), oldConfig); err != nil {
 		return err
 	}
-	if err := managedFile(p.Plist, renderPlist(p), oldPlist); err != nil {
+	if _, err := managedWrite(&record, p.Plist, renderPlist(p), oldPlist); err != nil {
 		return err
 	}
 	if err := startService(ctx, launchctl, p, false); err != nil {
@@ -520,10 +596,22 @@ func Install(ctx context.Context, opts Options) error {
 	if err := saveInstallation(p, record); err != nil {
 		return err
 	}
-	if err := managedFile(p.GARMConfig, renderGARMConfig(p, secrets, true), renderGARMConfig(p, secrets, false)); err != nil {
+	configChanged, err := managedWrite(&record, p.GARMConfig, renderGARMConfig(p, secrets, true), renderGARMConfig(p, secrets, false))
+	if err != nil {
 		return err
 	}
-	if err := startService(ctx, launchctl, p, true); err != nil {
+	if err := saveInstallation(p, record); err != nil {
+		return err
+	}
+	// Restarting (kickstart -k) kills the controller's process group,
+	// including any in-flight provider clone holding its inherited lock. A
+	// same-release repeat install with unchanged files must therefore NOT
+	// restart; only a real content change (or a stopped service) does.
+	if configChanged {
+		if err := startService(ctx, launchctl, p, true); err != nil {
+			return err
+		}
+	} else if err := startService(ctx, launchctl, p, false); err != nil {
 		return err
 	}
 	if _, err := waitController(ctx, p); err != nil {

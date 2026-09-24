@@ -134,7 +134,7 @@ func fixture(t *testing.T) (*Provider, *memoryMachines, params.BootstrapInstance
 	if err := state.Initialize(ctx, dir); err != nil {
 		t.Fatal(err)
 	}
-	manifest := templates.Manifest{SchemaVersion: 1, ImageID: "ubuntu-arm64-v1", MachineID: "template-id", RecipeSHA256: strings.Repeat("a", 64), RunnerSHA256: strings.Repeat("b", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
+	manifest := templates.Manifest{SchemaVersion: 1, ImageID: "ubuntu-arm64-v1", MachineID: "template-id", OSVersion: "noble", RecipeSHA256: strings.Repeat("a", 64), RunnerSHA256: strings.Repeat("b", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
 	manifestPath := filepath.Join(dir, "template.json")
 	if err := templates.WriteManifest(manifestPath, manifest); err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func fixture(t *testing.T) (*Provider, *memoryMachines, params.BootstrapInstance
 		t.Fatal(err)
 	}
 	backend := &memoryMachines{settings: map[string]bool{}, machines: map[string]orbstack.Machine{
-		"template-id": {ID: "template-id", Name: "approved-template", State: orbstack.StateStopped, Image: orbstack.Image{Distro: "ubuntu", Version: "24.04", Arch: "arm64"}, Config: orbstack.MachineConfig{Isolated: true}},
+		"template-id": {ID: "template-id", Name: "approved-template", State: orbstack.StateStopped, Image: orbstack.Image{Distro: "ubuntu", Version: "noble", Arch: "arm64"}, Config: orbstack.MachineConfig{Isolated: true}},
 		"foreign-id":  {ID: "foreign-id", Name: "foreign-name", State: orbstack.StateRunning},
 	}}
 	p.orb = backend
@@ -168,7 +168,7 @@ func TestCreateIdempotencyAndOwnedDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ProviderID != "runner-id" || first.Name != bootstrap.Name || first.Status != params.InstanceRunning || first.OSArch != params.Arm64 || first.OSVersion != "24.04" {
+	if first.ProviderID != "runner-id" || first.Name != bootstrap.Name || first.Status != params.InstanceRunning || first.OSArch != params.Arm64 || first.OSVersion != "noble" {
 		t.Fatalf("wrong real-machine result: %#v", first)
 	}
 	bootstrap.InstanceToken = "different-retry-token"

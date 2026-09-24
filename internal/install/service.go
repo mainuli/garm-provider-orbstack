@@ -49,6 +49,7 @@ description = "OrbStack runner provider"
 provider_executable = %q
 config_file = %q
 interface_version = "v0.1.0"
+environment_variables = ["HOME"]
 `, filepath.Join(p.Release, "providers.d/garm-provider-orbstack"), p.HostConfig)
 	}
 	return []byte(b.String())

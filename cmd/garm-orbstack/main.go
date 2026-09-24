@@ -89,11 +89,10 @@ func main() {
 }
 
 func runVersion(_ []string) error {
-	if releaseinfo.GARMSource != "" {
-		fmt.Printf("garm-orbstack %s (garm: %s)\n", releaseinfo.Version, releaseinfo.GARMSource)
-	} else {
-		fmt.Printf("garm-orbstack %s\n", releaseinfo.Version)
-	}
+	// Output is a machine-readable contract: install.sh and the installer's
+	// provenance check compare the entire trimmed line to the release tag.
+	// Provenance details (GARM source) belong to doctor, not here.
+	fmt.Println(releaseinfo.Version)
 	return nil
 }
 

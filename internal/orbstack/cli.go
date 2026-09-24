@@ -15,7 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"os/user"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +31,38 @@ type Client struct {
 // New returns a client for the given absolute orbctl path.
 func New(orbctlPath string) *Client {
 	return &Client{OrbctlPath: orbctlPath}
+}
+
+// orbctlEnv builds the environment for every orbctl child. GARM executes
+// external providers with a stripped environment (only GARM_* variables
+// plus declared provider environment_variables), and orbctl panics
+// ("$HOME is not defined") without HOME. The provider block declares
+// environment_variables = ["HOME"], and this fallback reconstructs HOME
+// from the OS user database when even the provider process lacks it, so
+// the adapter works under both the operator shell and GARM's exec.
+func orbctlEnv() []string {
+	env := os.Environ()
+	hasHome := false
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "HOME=") && len(kv) > len("HOME=") {
+			hasHome = true
+			break
+		}
+	}
+	if !hasHome {
+		if home, err := userHomeDir(); err == nil && home != "" {
+			env = append(env, "HOME="+home)
+		}
+	}
+	return env
+}
+
+// userHomeDir resolves the current user's home without relying on $HOME.
+func userHomeDir() (string, error) {
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		return u.HomeDir, nil
+	}
+	return "", errors.New("could not resolve home directory")
 }
 
 // Image is the distro/arch metadata of a machine.
@@ -112,7 +146,9 @@ func (c *Client) Create(ctx context.Context, opts CreateOptions) error {
 // and additional stdio before Run/Wait; this is how a killed helper leaves
 // the lock held by the surviving orbctl child.
 func (c *Client) CloneCmd(ctx context.Context, source, dest string) *exec.Cmd {
-	return exec.CommandContext(ctx, c.OrbctlPath, "clone", source, dest)
+	cmd := exec.CommandContext(ctx, c.OrbctlPath, "clone", source, dest)
+	cmd.Env = orbctlEnv()
+	return cmd
 }
 
 // Clone clones source to dest and waits for completion. The resulting
@@ -330,6 +366,7 @@ func (c *Client) RunCmd(ctx context.Context, opts RunOptions) *exec.Cmd {
 	}
 	args = append(args, opts.Command...)
 	cmd := exec.CommandContext(ctx, c.OrbctlPath, args...)
+	cmd.Env = orbctlEnv()
 	cmd.Stdin = opts.Stdin
 	cmd.Stdout = opts.Stdout
 	cmd.Stderr = opts.Stderr
@@ -360,6 +397,7 @@ func (c *Client) runOutput(ctx context.Context, args ...string) ([]byte, error) 
 		return nil, errors.New("orbstack: orbctl path is empty")
 	}
 	cmd := exec.CommandContext(ctx, c.OrbctlPath, args...)
+	cmd.Env = orbctlEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -118,7 +118,7 @@ func TestSDKRejectsVersionAndControllerBeforeOrbStack(t *testing.T) {
 
 func TestSDKCreatePoolMismatchAndDuplicateExit(t *testing.T) {
 	host, path := sdkFixture(t)
-	manifest := templates.Manifest{SchemaVersion: 1, ImageID: "approved-image", MachineID: "template-id", Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", RunnerSHA256: strings.Repeat("a", 64), RecipeSHA256: strings.Repeat("b", 64), OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
+	manifest := templates.Manifest{SchemaVersion: 1, ImageID: "approved-image", MachineID: "template-id", OSVersion: "noble", Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", RunnerSHA256: strings.Repeat("a", 64), RecipeSHA256: strings.Repeat("b", 64), OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
 	manifestPath := filepath.Join(host.StateDir, "manifest.json")
 	if err := templates.WriteManifest(manifestPath, manifest); err != nil {
 		t.Fatal(err)

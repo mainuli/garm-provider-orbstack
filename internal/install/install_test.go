@@ -78,7 +78,8 @@ func TestManagedFileDoesNotOverwriteUnrelatedEdits(t *testing.T) {
 	if err := os.WriteFile(path, []byte("operator changes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := managedFile(path, []byte("new"), []byte("old")); err == nil {
+	var record installationRecord
+	if _, err := managedWrite(&record, path, []byte("new"), []byte("old")); err == nil {
 		t.Fatal("overwrote unmanaged contents")
 	}
 	got, err := os.ReadFile(path)

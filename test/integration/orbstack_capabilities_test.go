@@ -222,6 +222,11 @@ func TestOrbStackCapabilities(t *testing.T) {
 	if !srcInfo.Record.Config.Isolated {
 		t.Fatalf("source machine not isolated: %+v", srcInfo.Record.Config)
 	}
+	// OrbStack 2.2.3 records Ubuntu 24.04 machines with the codename
+	// "noble"; template manifests must compare against this observed label.
+	if srcInfo.Record.Image.Distro != "ubuntu" || srcInfo.Record.Image.Version != "noble" {
+		t.Fatalf("unexpected recorded image %q", srcInfo.Record.Image)
+	}
 
 	// --- prepare source: packages, marker, docker, identity reset --------
 	// Note: OrbStack's ubuntu:24.04 image ships without cloud-init; nothing
