@@ -7,13 +7,9 @@ var (
 	// Version is the release tag (for example v0.1.0), "dev" in development
 	// builds.
 	Version = "dev"
-	// GARMImage is the digest-pinned upstream GARM image reference the
-	// controller image is derived from, for example
-	// ghcr.io/cloudbase/garm@sha256:... . Empty in development builds.
-	GARMImage = ""
-	// ControllerImage is the digest reference of the published derived
-	// controller image, for example
-	// ghcr.io/mainuli/garm-provider-orbstack@sha256:... . Empty in
-	// development builds.
-	ControllerImage = ""
+	// GARMSource identifies the exact upstream GARM revision the bundled
+	// garm/garm-cli binaries were built from, for example
+	// "cloudbase/garm v0.2.1 (154638445c3949c1958b01812f69d9a1e4d82684)".
+	// Empty in development builds.
+	GARMSource = ""
 )

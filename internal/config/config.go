@@ -58,17 +58,6 @@ type Host struct {
 	Flavors          map[string]Flavor
 }
 
-// Adapter is the configuration of the Linux provider executable inside the
-// GARM controller container. It reaches the host helper over restricted SSH.
-type Adapter struct {
-	Host             string
-	User             string
-	IdentityFile     string
-	KnownHostsFile   string
-	Port             int
-	OperationTimeout time.Duration
-}
-
 // hostTOML mirrors Host with duration strings, because TOML has no duration
 // type and we decode them explicitly rather than relying on decode magic.
 type hostTOML struct {
@@ -115,15 +104,6 @@ func (h Host) toTOML() hostTOML {
 	return out
 }
 
-type adapterTOML struct {
-	Host             string `toml:"host"`
-	Port             int    `toml:"port"`
-	User             string `toml:"user"`
-	IdentityFile     string `toml:"identity_file"`
-	KnownHostsFile   string `toml:"known_hosts_file"`
-	OperationTimeout string `toml:"operation_timeout"`
-}
-
 // LoadHost reads and validates the host configuration at path. Zero images
 // are valid (installed but unprepared controller). Once an image is
 // registered its manifest file must exist; a missing manifest is an error.
@@ -157,67 +137,6 @@ func loadHostFile(path string) (Host, error) {
 	}
 	return host, nil
 }
-
-// LoadAdapter reads and validates the Linux adapter configuration.
-func LoadAdapter(path string) (Adapter, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return Adapter{}, fmt.Errorf("reading adapter config %s: %w", path, err)
-	}
-	var decoded adapterTOML
-	md, err := toml.Decode(string(raw), &decoded)
-	if err != nil {
-		return Adapter{}, fmt.Errorf("parsing adapter config %s: %w", path, err)
-	}
-	if len(md.Undecoded()) > 0 {
-		keys := make([]string, 0, len(md.Undecoded()))
-		for _, k := range md.Undecoded() {
-			keys = append(keys, k.String())
-		}
-		return Adapter{}, fmt.Errorf("adapter config %s has unknown keys: %s", path, strings.Join(keys, ", "))
-	}
-	adapter := Adapter{
-		Host:           decoded.Host,
-		User:           decoded.User,
-		IdentityFile:   decoded.IdentityFile,
-		KnownHostsFile: decoded.KnownHostsFile,
-		Port:           decoded.Port,
-	}
-	if decoded.OperationTimeout != "" {
-		d, err := time.ParseDuration(decoded.OperationTimeout)
-		if err != nil {
-			return Adapter{}, fmt.Errorf("adapter config %s: invalid operation_timeout %q: %w", path, decoded.OperationTimeout, err)
-		}
-		adapter.OperationTimeout = d
-	}
-	if err := validateAdapter(adapter, path); err != nil {
-		return Adapter{}, err
-	}
-	return adapter, nil
-}
-
-func validateAdapter(a Adapter, path string) error {
-	if strings.TrimSpace(a.Host) == "" {
-		return fmt.Errorf("adapter config %s: host is required", path)
-	}
-	if a.Port <= 0 || a.Port > 65535 {
-		return fmt.Errorf("adapter config %s: port must be in 1-65535, got %d", path, a.Port)
-	}
-	if strings.TrimSpace(a.User) == "" {
-		return fmt.Errorf("adapter config %s: user is required", path)
-	}
-	if !filepath.IsAbs(a.IdentityFile) {
-		return fmt.Errorf("adapter config %s: identity_file must be an absolute path", path)
-	}
-	if !filepath.IsAbs(a.KnownHostsFile) {
-		return fmt.Errorf("adapter config %s: known_hosts_file must be an absolute path", path)
-	}
-	if a.OperationTimeout <= 0 {
-		return fmt.Errorf("adapter config %s: operation_timeout must be positive", path)
-	}
-	return nil
-}
-
 func validateHost(h Host, path string) error {
 	if _, err := uuid.Parse(h.ControllerID); err != nil {
 		return fmt.Errorf("host config %s: controller_id must be a UUID: %w", path, err)

@@ -13,8 +13,9 @@
 //  2. host-to-isolated-guest argv execution with stdin and exit status;
 //  3. resource limit enforcement inside an isolated clone;
 //  4. guest-local Docker inside an isolated machine;
-//  5. isolated-guest-to-Docker HTTPS reachability of a disposable upstream
-//     GARM v0.2.1 container via its orb.local domain, with a test CA;
+//  5. isolated-guest-to-Mac HTTPS reachability of a native TLS server
+//     bound to the Mac loopback only, via the stable host.orb.internal
+//     name, with a test CA (architecture B: native GARM service);
 //  6. machine ID stability across stop/start and rename;
 //  7. a killed helper's orbctl child retains the inherited instance lock
 //     until it exits (fd inheritance survives SIGKILL of the parent).
@@ -28,16 +29,21 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -46,7 +52,6 @@ import (
 )
 
 const (
-	garmImage      = "ghcr.io/cloudbase/garm:v0.2.1"
 	minOrbstackVer = "2.2.3"
 	probeTimeout   = 20 * time.Minute
 )
@@ -72,14 +77,29 @@ func maybeChildHelper() {
 		os.Exit(2)
 	}
 	cmd := exec.Command(args[0], args[1:]...)
+	// The lock fd travels to orbctl as its fd 3. orbctl must NOT inherit
+	// any report pipes: os/exec's Wait() blocks on pipe EOF and a
+	// grandchild holding the write end would delay Wait() until the orbctl
+	// process exits, destroying the liveness window this test measures.
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "child: devnull:", err)
+		os.Exit(2)
+	}
+	cmd.Stdout = devnull
+	cmd.Stderr = devnull
 	cmd.ExtraFiles = []*os.File{f}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// fd 3 is the parent-side handshake pipe (write end). Mark it
+	// close-on-exec so orbctl never inherits it; the parent sees EOF as
+	// soon as this helper closes it after reporting the orbctl PID.
+	hs := os.NewFile(3, "handshake-pipe")
+	syscall.CloseOnExec(3)
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, "child: start:", err)
 		os.Exit(2)
 	}
-	fmt.Println("HELPER-STARTED")
+	fmt.Fprintf(hs, "HELPER-STARTED pid=%d\n", cmd.Process.Pid)
+	hs.Close()
 	for {
 		time.Sleep(time.Hour)
 	}
@@ -341,25 +361,40 @@ func TestOrbStackCapabilities(t *testing.T) {
 	t.Logf("stdin transfer exact: %q", strings.TrimSpace(runOut.String()))
 
 	// --- 6. resource enforcement inside the clone -------------------------
-	// OrbStack enforces per-machine limits at VM level: vCPU count and VM
-	// memory are visible to the guest as nproc and /proc/meminfo.
-	resOut, err := p.runInRoot(ctx, clone1, "sh", "-c", "nproc; grep MemTotal /proc/meminfo; cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max 2>/dev/null || true")
+	// OrbStack enforces per-machine limits via the guest's root cgroup
+	// (cpu.max/memory.max); nproc and /proc/meminfo reflect the VM, not the
+	// limit, so the cgroup files are the enforcement evidence.
+	resOut, err := p.runInRoot(ctx, clone1, "sh", "-c", "cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max")
 	if err != nil {
 		t.Fatalf("resource check: %v\n%s", err, resOut)
 	}
 	fields := strings.Fields(resOut)
-	if len(fields) < 3 {
+	if len(fields) != 3 {
 		t.Fatalf("resource output: %q", resOut)
 	}
-	var nproc int
-	if _, err := fmt.Sscanf(fields[0], "%d", &nproc); err != nil || nproc > 2 {
-		t.Errorf("vCPU limit not enforced: nproc=%s (want <= 2)", fields[0])
+	if fields[0] == "max" {
+		t.Errorf("cpu limit not enforced: %q", resOut)
+	} else {
+		var quota, period int
+		if _, err := fmt.Sscanf(fields[0], "%d", &quota); err != nil {
+			t.Fatalf("cpu.max quota: %v", err)
+		}
+		if _, err := fmt.Sscanf(fields[1], "%d", &period); err != nil {
+			t.Fatalf("cpu.max period: %v", err)
+		}
+		if quota > 2*period {
+			t.Errorf("cpu quota above 2 cpus: %q", resOut)
+		}
 	}
-	var memTotalKB int
-	if _, err := fmt.Sscanf(fields[2], "MemTotal:%d", &memTotalKB); err == nil && memTotalKB > 2048*1024 {
-		t.Errorf("memory limit above 2048MiB: MemTotal=%dkB", memTotalKB)
+	if fields[2] == "max" {
+		t.Errorf("memory limit not enforced: %q", resOut)
+	} else {
+		var memBytes int64
+		if _, err := fmt.Sscanf(fields[2], "%d", &memBytes); err != nil || memBytes > 2048*1024*1024 {
+			t.Errorf("memory limit above 2048MiB: %q", resOut)
+		}
 	}
-	t.Logf("resource enforcement observed: nproc=%s MemTotal=%skB cgroup=%q", fields[0], fields[2], strings.Join(fields[3:], " "))
+	t.Logf("resource enforcement observed (root cgroup): %q", strings.Join(fields, " "))
 
 	// --- 7. guest-local docker in an isolated clone -----------------------
 	dout, err := p.runInRoot(ctx, clone2, "docker", "run", "--rm", "hello-world")
@@ -390,137 +425,99 @@ func TestOrbStackCapabilities(t *testing.T) {
 		t.Fatalf("ID/name stability broken: before id=%s after id=%s name=%s", ids[0], afterInfo.Record.ID, afterInfo.Record.Name)
 	}
 
-	// --- 9. GARM HTTPS reachability from an isolated clone -----------------
-	testGARMHTTPS(t, ctx, p, renamed)
+	// --- 9. native Mac HTTPS reachability from an isolated clone -----------
+	testMacNativeHTTPS(t, ctx, p, renamed)
 
 	// --- 10. killed helper's orbctl child retains the lock -----------------
 	testInheritedLockRetention(t, ctx, p, clone2)
 }
 
-// testGARMHTTPS starts a disposable upstream GARM v0.2.1 container with a
-// test-generated TLS certificate whose SANs include the orb.local container
-// domain, then verifies an isolated clone can complete DNS + TCP + TLS and
-// receives an HTTP status (401/403 unauthenticated) rather than a network
-// error.
-func testGARMHTTPS(t *testing.T, ctx context.Context, p *probeEnv, fromMachine string) {
+// testMacNativeHTTPS proves the architecture-B runner endpoint: a TLS
+// server bound to 127.0.0.1 on the Mac (only) is reachable from an
+// isolated machine via the stable host.orb.internal name, with proper CA
+// validation and no LAN exposure.
+func testMacNativeHTTPS(t *testing.T, ctx context.Context, p *probeEnv, fromMachine string) {
 	t.Helper()
 	dir := t.TempDir()
-	container := "garm.garm-probe-" + p.suffix
-	domain := container + ".orb.local"
-	caCertPEM, _, serverCertPEM, serverKeyPEM, err := generateTLS(domain)
+	caCertPEM, _, serverCertPEM, serverKeyPEM, err := generateTLS()
 	if err != nil {
 		t.Fatalf("tls generation: %v", err)
 	}
-
-	jwtSecret := randomHex(32)
-	dbPass := randomHex(16)
-	cfg := fmt.Sprintf(`
-[default]
-enable_webhook_management = false
-
-[logging]
-log_format = "text"
-log_level = "info"
-
-[jwt_auth]
-secret = "%s"
-
-[apiserver]
-bind = "0.0.0.0"
-port = 9997
-use_tls = true
-[apiserver.tls]
-certificate = "/etc/garm/tls/server-cert.pem"
-key = "/etc/garm/tls/server-key.pem"
-[apiserver.webui]
-enable = false
-
-[database]
-backend = "sqlite3"
-passphrase = "%s"
-[database.sqlite3]
-db_file = "/etc/garm/garm.db"
-`, jwtSecret, dbPass)
-
-	cfgDir := filepath.Join(dir, "garm")
-	if err := os.MkdirAll(filepath.Join(cfgDir, "tls"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "tls", "server-cert.pem"), serverCertPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "tls", "server-key.pem"), serverKeyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	caPath := filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(caPath, caCertPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	pull := exec.CommandContext(ctx, "docker", "pull", garmImage)
-	if out, err := pull.CombinedOutput(); err != nil {
-		t.Fatalf("docker pull %s: %v\n%s", garmImage, err, out)
-	}
-	run := exec.CommandContext(ctx, "docker", "run", "-d", "--name", container,
-		"-v", cfgDir+":/etc/garm",
-		garmImage)
-	var outBuf bytes.Buffer
-	run.Stdout = &outBuf
-	run.Stderr = &outBuf
-	if err := run.Run(); err != nil {
-		t.Fatalf("docker run garm probe: %v\n%s", err, outBuf.String())
-	}
-	p.dockerID = container
-
-	// Wait for GARM to answer TLS from the host via the same orb.local
-	// domain, so we know the server is up before testing the guest.
-	deadline := time.Now().Add(90 * time.Second)
-	up := false
-	for time.Now().Before(deadline) {
-		cmd := exec.CommandContext(ctx, "curl", "-sS", "--cacert", caPath,
-			"-o", "/dev/null", "-w", "%{http_code}",
-			"--", "https://"+domain+":9997/api/v1/metadata")
-		if out, err := cmd.Output(); err == nil {
-			if s := strings.TrimSpace(string(out)); s != "" && s != "000" {
-				up = true
-				t.Logf("garm probe container up, host-side status %s", s)
-				break
-			}
+	certPath := filepath.Join(dir, "server-cert.pem")
+	keyPath := filepath.Join(dir, "server-key.pem")
+	for name, data := range map[string][]byte{
+		caPath:   caCertPEM,
+		certPath: serverCertPEM,
+		keyPath:  serverKeyPEM,
+	} {
+		if err := os.WriteFile(name, data, 0o600); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(2 * time.Second)
-	}
-	if !up {
-		logs, _ := exec.CommandContext(ctx, "docker", "logs", container).CombinedOutput()
-		t.Fatalf("garm probe never answered; logs:\n%s", logs)
 	}
 
-	// Hand the CA to the guest via stdin and probe DNS+TLS+HTTP from there.
-	caBytes, err := os.ReadFile(caPath)
+	// TLS server on the Mac loopback only.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("listen: %v", err)
 	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	cert, err := tls.X509KeyPair(serverCertPEM, serverKeyPEM)
+	if err != nil {
+		t.Fatalf("keypair: %v", err)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "probe-ok")
+		}),
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+	}
+	go func() { _ = srv.ServeTLS(ln, "", "") }()
+	defer srv.Close()
+	t.Logf("native TLS server on 127.0.0.1:%d", port)
+
+	// Host-side sanity: the Mac itself can reach it via localhost.
+	resp, err := (&http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool(t, caPath)}},
+		Timeout:   5 * time.Second,
+	}).Get(fmt.Sprintf("https://localhost:%d/", port))
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("host-side TLS check failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Guest-side: hand the CA via stdin, resolve host.orb.internal, TLS,
+	// expect a real HTTP status (not a DNS/connection failure).
 	var guestOut bytes.Buffer
 	guestErr := p.client.Run(ctx, orbstack.RunOptions{
 		Machine: fromMachine,
 		User:    "root",
-		Command: []string{"sh", "-c", "cat > /tmp/garm-ca.pem && curl -sS --cacert /tmp/garm-ca.pem -o /dev/null -w '%{http_code}' -- https://" + domain + ":9997/api/v1/metadata"},
-		Stdin:   bytes.NewReader(caBytes),
+		Command: []string{"sh", "-c", "cat > /tmp/garm-ca.pem && curl -sS --cacert /tmp/garm-ca.pem -o /dev/null -w '%{http_code}' -- https://host.orb.internal:" + strconv.Itoa(port) + "/"},
+		Stdin:   bytes.NewReader(caCertPEM),
 		Stdout:  &guestOut,
 		Stderr:  &guestOut,
 	})
 	status := strings.TrimSpace(guestOut.String())
 	if guestErr != nil {
-		t.Fatalf("isolated guest cannot reach https://%s:9997 (DNS/TLS/connection failure): %v\n%s", domain, guestErr, guestOut.String())
+		t.Fatalf("isolated guest cannot reach https://host.orb.internal:%d (DNS/TLS/connection failure): %v\n%s", port, guestErr, guestOut.String())
 	}
-	switch status {
-	case "401", "403", "200":
-		t.Logf("guest reached garm over TLS, status %s", status)
-	default:
-		t.Fatalf("unexpected guest status %q (want 401/403/200), output %q", status, guestOut.String())
+	if status != "200" {
+		t.Fatalf("unexpected guest status %q (want 200), output %q", status, guestOut.String())
 	}
+	t.Logf("guest reached native Mac TLS server via host.orb.internal:%d, status %s", port, status)
+}
+
+func certPool(t *testing.T, caPath string) *x509.CertPool {
+	t.Helper()
+	pemBytes, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		t.Fatal("parsing CA pem")
+	}
+	return pool
 }
 
 // testInheritedLockRetention proves fd-based lock inheritance across a
@@ -531,43 +528,42 @@ func testInheritedLockRetention(t *testing.T, ctx context.Context, p *probeEnv, 
 	lockPath := filepath.Join(t.TempDir(), "instance.lock")
 
 	// (a) deterministic retention: long-running orbctl child holds fd 3.
+	hsR, hsW, errHs := os.Pipe()
+	if errHs != nil {
+		t.Fatalf("handshake pipe: %v", errHs)
+	}
 	child := exec.Command(os.Args[0])
 	child.Env = append(os.Environ(),
 		"GARM_PROBE_CHILD_LOCK_HELPER=1",
 		"GARM_PROBE_LOCK_FILE="+lockPath,
-		"GARM_PROBE_ORBCTL_ARGS="+strings.Join([]string{p.orbctl, "run", "-m", spareMachine, "--", "sleep", "25"}, "\x1f"),
+		"GARM_PROBE_ORBCTL_ARGS="+strings.Join([]string{p.orbctl, "run", "-m", spareMachine, "sleep", "25"}, "\x1f"),
 	)
-	var childOut bytes.Buffer
-	child.Stdout = &childOut
-	child.Stderr = &childOut
+	child.ExtraFiles = []*os.File{hsW}
+	child.Stdout = nil
+	child.Stderr = nil
 	if err := child.Start(); err != nil {
 		t.Fatalf("start helper: %v", err)
 	}
-	waitStarted := time.Now().Add(30 * time.Second)
-	for time.Now().Before(waitStarted) {
-		if strings.Contains(childOut.String(), "HELPER-STARTED") {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if !strings.Contains(childOut.String(), "HELPER-STARTED") {
-		t.Fatalf("helper never started orbctl: %q", childOut.String())
-	}
+	hsW.Close()
+	orbctlPID := waitPipeHandshake(t, hsR)
 	if err := child.Process.Kill(); err != nil { // SIGKILL the helper only
 		t.Fatalf("kill helper: %v", err)
 	}
 	_ = child.Wait()
 
-	// Lock must still be held by the surviving orbctl child.
+	// The orphaned orbctl child must still be alive and holding the lock.
+	if err := syscall.Kill(orbctlPID, 0); err != nil {
+		t.Fatalf("orbctl child %d not alive after helper kill: %v", orbctlPID, err)
+	}
 	probe, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatalf("open lock after kill: %v", err)
 	}
 	defer probe.Close()
 	if err := unix.Flock(int(probe.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
-		t.Fatal("lock was released while the orphaned orbctl child is still alive: inherited-fd design broken")
+		t.Fatalf("lock was released while the orphaned orbctl child %d is still alive: inherited-fd design broken", orbctlPID)
 	} else {
-		t.Logf("lock retained by orphaned orbctl child: %v", err)
+		t.Logf("lock retained by orphaned orbctl child %d: %v", orbctlPID, err)
 	}
 	// And it must become available once the child exits.
 	deadline := time.Now().Add(60 * time.Second)
@@ -583,33 +579,24 @@ func testInheritedLockRetention(t *testing.T, ctx context.Context, p *probeEnv, 
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// (b) orphaned clone completes: kill the helper mid-clone, wait for the
-	// lock to be released (orbctl exited), then observe the destination.
-	orphanDest := "garm-probe-" + p.suffix + "-orphan"
-	child2 := exec.Command(os.Args[0])
-	child2.Env = append(os.Environ(),
-		"GARM_PROBE_CHILD_LOCK_HELPER=1",
-		"GARM_PROBE_LOCK_FILE="+lockPath,
-		"GARM_PROBE_ORBCTL_ARGS="+strings.Join([]string{p.orbctl, "clone", spareMachine, orphanDest}, "\x1f"),
-	)
-	var child2Out bytes.Buffer
-	child2.Stdout = &child2Out
-	child2.Stderr = &child2Out
-	if err := child2.Start(); err != nil {
-		t.Fatalf("start clone helper: %v", err)
-	}
-	waitStarted = time.Now().Add(30 * time.Second)
-	for time.Now().Before(waitStarted) {
-		if strings.Contains(child2Out.String(), "HELPER-STARTED") {
-			break
+	// (b) orphaned clone: kill the helper mid-clone and REQUIRE observing a
+	// live orphaned orbctl clone process still holding the lock (PID alive +
+	// EWOULDBLOCK on the immediate probe), then observe completion/release.
+	// A clone that finishes before the observation window makes the attempt
+	// inconclusive; retry with a fresh destination, and fail if never
+	// observed — absence of the held-lock window is not a pass.
+	var observed *orphanObservation
+	for attempt := 0; attempt < 5 && observed == nil; attempt++ {
+		observed = attemptOrphanClone(t, ctx, p, lockPath, spareMachine,
+			fmt.Sprintf("garm-probe-%s-orphan-%d", p.suffix, attempt))
+		if observed == nil {
+			t.Logf("orphan clone attempt %d: clone finished before observation window; retrying", attempt)
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
-	if !strings.Contains(child2Out.String(), "HELPER-STARTED") {
-		t.Fatalf("clone helper never started: %q", child2Out.String())
+	if observed == nil {
+		t.Fatal("could not observe a live orphaned clone holding the lock: clone-specific proof inconclusive")
 	}
-	_ = child2.Process.Kill()
-	_ = child2.Wait()
+	t.Logf("orphaned clone %d observed alive holding the lock after helper kill", observed.pid)
 
 	// Wait for the orphaned clone to finish (lock released == orbctl exited).
 	probe2, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
@@ -617,7 +604,6 @@ func testInheritedLockRetention(t *testing.T, ctx context.Context, p *probeEnv, 
 		t.Fatalf("open lock for clone wait: %v", err)
 	}
 	defer probe2.Close()
-	deadline = time.Now().Add(120 * time.Second)
 	for {
 		err = unix.Flock(int(probe2.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
@@ -627,7 +613,7 @@ func testInheritedLockRetention(t *testing.T, ctx context.Context, p *probeEnv, 
 		if time.Now().After(deadline) {
 			t.Fatalf("orphaned clone never released the lock: %v", err)
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	// The clone must eventually exist as a stopped machine (it completed
 	// despite the helper being killed).
@@ -637,7 +623,7 @@ func testInheritedLockRetention(t *testing.T, ctx context.Context, p *probeEnv, 
 		machines, lerr := p.client.List(ctx)
 		if lerr == nil {
 			for _, m := range machines {
-				if m.Name == orphanDest {
+				if m.Name == observed.dest {
 					if m.ID != "" {
 						p.trackMachine(m.ID)
 					}
@@ -653,14 +639,66 @@ func testInheritedLockRetention(t *testing.T, ctx context.Context, p *probeEnv, 
 		time.Sleep(time.Second)
 	}
 	if !exists {
-		t.Fatal("orphaned clone did not complete: machine missing or not stopped after lock release")
+		t.Fatalf("orphaned clone did not complete: machine %s missing or not stopped after lock release", observed.dest)
 	}
 	t.Log("orphaned clone completed after helper kill; lock held for its full lifetime")
 }
 
+type orphanObservation struct {
+	pid  int
+	dest string
+}
+
+// attemptOrphanClone runs one helper+clone cycle, kills the helper and
+// checks — immediately — that the orphaned orbctl clone process is alive
+// and holding the lock. It returns nil when the clone finished too fast to
+// observe (inconclusive attempt).
+func attemptOrphanClone(t *testing.T, ctx context.Context, p *probeEnv, lockPath, spareMachine, dest string) *orphanObservation {
+	t.Helper()
+	_ = ctx
+	hsR, hsW, errHs := os.Pipe()
+	if errHs != nil {
+		t.Fatalf("handshake pipe: %v", errHs)
+	}
+	child := exec.Command(os.Args[0])
+	child.Env = append(os.Environ(),
+		"GARM_PROBE_CHILD_LOCK_HELPER=1",
+		"GARM_PROBE_LOCK_FILE="+lockPath,
+		"GARM_PROBE_ORBCTL_ARGS="+strings.Join([]string{p.orbctl, "clone", spareMachine, dest}, "\x1f"),
+	)
+	child.ExtraFiles = []*os.File{hsW}
+	child.Stdout = nil
+	child.Stderr = nil
+	if err := child.Start(); err != nil {
+		t.Fatalf("start clone helper: %v", err)
+	}
+	hsW.Close()
+	clonePID := waitPipeHandshake(t, hsR)
+	if err := child.Process.Kill(); err != nil {
+		t.Fatalf("kill clone helper: %v", err)
+	}
+	_ = child.Wait()
+
+	// The orphaned orbctl clone must be alive right now...
+	if err := syscall.Kill(clonePID, 0); err != nil {
+		return nil
+	}
+	// ...and still holding the lock.
+	probe, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open lock after clone-kill: %v", err)
+	}
+	defer probe.Close()
+	if err := unix.Flock(int(probe.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
+		_ = unix.Flock(int(probe.Fd()), unix.LOCK_UN)
+		return nil
+	}
+	return &orphanObservation{pid: clonePID, dest: dest}
+}
+
 // generateTLS creates a test CA and a server certificate valid for the
-// probe's orb.local container domain and localhost.
-func generateTLS(domain string) (caCert, caKey, serverCert, serverKey []byte, err error) {
+// native controller endpoint names.
+func generateTLS() (caCert, caKey, serverCert, serverKey []byte, err error) {
 	caRSA, err := rsa.GenerateKey(rand.Reader, 3072)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -693,7 +731,7 @@ func generateTLS(domain string) (caCert, caKey, serverCert, serverKey []byte, er
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost", "garm.garm-orbstack.orb.local", domain},
+		DNSNames:     []string{"localhost", "host.orb.internal", "host.docker.internal", "garm.garm-orbstack.orb.local"},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCertParsed, &serverRSA.PublicKey, caRSA)
@@ -703,6 +741,21 @@ func generateTLS(domain string) (caCert, caKey, serverCert, serverKey []byte, er
 	serverCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER})
 	serverKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverRSA)})
 	return caCertPEM, caKeyPEM, serverCertPEM, serverKeyPEM, nil
+}
+
+// waitPipeHandshake blocks reading the helper's handshake pipe until the
+// helper reports the spawned orbctl PID, then returns the PID.
+func waitPipeHandshake(t *testing.T, r *os.File) int {
+	t.Helper()
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading handshake: %v", err)
+	}
+	var pid int
+	if n, _ := fmt.Sscanf(string(raw), "HELPER-STARTED pid=%d", &pid); n != 1 || pid <= 0 {
+		t.Fatalf("bad handshake %q", string(raw))
+	}
+	return pid
 }
 
 func randomHex(n int) string {
