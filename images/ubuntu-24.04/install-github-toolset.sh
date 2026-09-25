@@ -72,12 +72,38 @@ step() { printf '\n===== toolset step: %s =====\n' "$*" >&2; }
 # treat the shebang as a comment and silently drop errexit.
 run_step() { sudo --preserve-env=HELPER_SCRIPTS,HELPER_SCRIPT_FOLDER,INSTALLER_SCRIPT_FOLDER,IMAGE_FOLDER,IMAGE_OS,IMAGE_VERSION,ARCHITECTURE,DEBIAN_FRONTEND "$@"; }
 
-step 'base prerequisites for the upstream installers'
-# The OrbStack base ships curl but not wget (install-ms-repos.sh fetches the
-# MS repo package with wget), and install-ms-repos.sh calls apt-get without
-# -y, which aborts under errexit with no tty on stdin. Patch defensively.
+step 'normalize the minimal LXC-style base to the cloud/server layout'
+# OrbStack's Ubuntu image is distrobuilder-based: a classic one-line
+# /etc/apt/sources.list on ports.ubuntu.com, no deb822 ubuntu.sources, and
+# without the server seed's wget/man-db/needrestart. The pinned scripts
+# assume the cloud-image layout, so normalize it first:
+#   1. synthesize the deb822 sources the scripts expect (same azure.archive
+#      URIs the official cloud image carries; the upstream script then
+#      converts them to its mirror+file failover) and disable the ports list
+#   2. install wget (install-ms-repos.sh fetches with it) and man-db
+#      (configure-environment.sh reconfigures it)
+#   3. patch install-ms-repos.sh's bare apt-get calls with -y (errexit +
+#      no tty on stdin would abort)
+if [ ! -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+    cat > /etc/apt/sources.list.d/ubuntu.sources <<'SOURCES'
+Types: deb
+URIs: http://azure.archive.ubuntu.com/ubuntu/
+Suites: noble noble-updates noble-backports
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: noble-security
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+SOURCES
+    if [ -f /etc/apt/sources.list ]; then
+        mv /etc/apt/sources.list /etc/apt/sources.list.d/garm-legacy-ports.list.disabled
+    fi
+fi
 apt-get -o DPkg::Lock::Timeout=600 update
-apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db
 sed -i -e 's/^apt-get install /apt-get install -y /' -e 's/^apt-get dist-upgrade$/apt-get dist-upgrade -y/' "$installers/install-ms-repos.sh"
 
 step 'apt sources and limits'
@@ -191,6 +217,10 @@ step 'official image cleanup'
 run_step bash -e "$installers/cleanup.sh"
 
 step 'final system configuration'
+# The minimal base has no needrestart; drop configure-system.sh's
+# needrestart-only block rather than installing it (its apt hook restarts
+# services during job package installs, which could kill a runner unit).
+[ -f /etc/needrestart/needrestart.conf ] || sed -i '/needrestart\.conf/,+1d' "$installers/configure-system.sh"
 run_step bash -e "$installers/configure-system.sh"
 
 rm -rf "$work"
