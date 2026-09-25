@@ -316,6 +316,10 @@ step 'final system configuration'
 # needrestart-only block rather than installing it (its apt hook restarts
 # services during job package installs, which could kill a runner unit).
 [ -f /etc/needrestart/needrestart.conf ] || sed -i '/^if is_ubuntu24; then$/,/^fi$/d' "$installers/configure-system.sh"
+# configure-system.sh ends with "chmod -R 777 /opt", which crosses OrbStack's
+# read-only /opt/orbstack-guest integration mount and aborts. Restrict the
+# chmod to /opt's own filesystem.
+sed -i 's#^chmod -R 777 /opt$#find /opt -xdev -exec chmod 777 {} +#' "$installers/configure-system.sh"
 # install-docker.sh changes the docker GID (groupmod) while the apt-started
 # daemon is running with the old group; its un-retried conditional start then
 # fails in OrbStack guests ("Job for docker.service failed"). Restart the
