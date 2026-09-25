@@ -64,6 +64,48 @@ new = (
 assert old in s, "upstream helper shape changed"
 open(path, "w").write(s.replace(old, new, 1))
 PYADAPT
+# Several installers call api.github.com directly with a single un-retried
+# curl (nvm, swift, zstd, gh-aw-firewall, docker's ecr helper); a quota 403
+# silently yields null/empty and either fails the build late or installs
+# nothing. Wrap every such assignment in the same window-aware retry.
+python3 - "$installers" <<'PYWRAP'
+import os, re, sys
+installers = sys.argv[1]
+for name in os.listdir(installers):
+    if not name.endswith(".sh"):
+        continue
+    path = os.path.join(installers, name)
+    lines = open(path).read().split("\n")
+    changed = False
+    url_vars = set()
+    for line in lines:
+        vm = re.match(r'^\s*([A-Za-z_][A-Za-z0-9_]*)="https://api\.github\.com[^"]*"', line)
+        if vm:
+            url_vars.add(vm.group(1))
+    for i, line in enumerate(lines):
+        if url_vars:
+            varpat = "|".join(re.escape(v) for v in sorted(url_vars))
+            m = re.match(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)=\$\((curl [^#]*(?:api\.github\.com|\$\{?(?:" + varpat + r")\}?)[^#]*)\)\s*$", line)
+        else:
+            m = re.match(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)=\$\((curl [^#]*api\.github\.com[^#]*)\)\s*$", line)
+        if not m:
+            continue
+        indent, var, rhs = m.groups()
+        wrapper = (
+            f'{indent}{var}=""\n'
+            f'{indent}for _garm_retry in $(seq 1 12); do\n'
+            f'{indent}    {var}=$({rhs}) && [ -n "${var}" ] && [ "${var}" != "null" ] && break\n'
+            f'{indent}    echo "api.github.com fetch failed (attempt ${{_garm_retry}}); waiting 300s for the quota window" >&2\n'
+            f'{indent}    sleep 300\n'
+            f'{indent}done'
+        )
+        lines[i] = wrapper
+        changed = True
+    if changed:
+        open(path, "w").write("\n".join(lines))
+        print(f"wrapped api.github.com retries in {name}")
+PYWRAP
+
 # The toolset's cmd_packages lists the virtual package "netcat", which apt
 # refuses to resolve between its two providers. Install the provider the
 # hosted images carry and teach the Apt pester test its command name (the
