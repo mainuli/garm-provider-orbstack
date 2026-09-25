@@ -111,8 +111,8 @@ SOURCES
 fi
 apt-get -o DPkg::Lock::Timeout=600 update
 # openssl provides /etc/ssl/openssl.cnf which configure-environment.sh
-# edits in place.
-apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl
+# edits in place; gnupg provides gpg for the Swift key pre-import below.
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl gnupg
 # install-swift.sh imports nine PGP keys through ONE un-retried keyserver
 # call; keyserver.ubuntu.com intermittently returns a subset, which aborts
 # the multi-hour build at signature verification. Pre-import with retries.
