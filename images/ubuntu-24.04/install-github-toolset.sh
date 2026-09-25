@@ -128,7 +128,7 @@ gpg --list-keys EF80A866B47A981F >/dev/null 2>&1 || { echo 'swift signing key EF
 # signature and bash -e aborts install-swift.sh. Accept the good signature
 # despite key expiry (the archive is still signature-verified and fetched
 # over TLS from download.swift.org).
-sed -i 's|^gpg --verify "$signature_path" "$archive_path"$|gpg --verify "$signature_path" "$archive_path" \|\| gpg --verify "$signature_path" "$archive_path" 2>\&1 | grep -q "Good signature"|' "$installers/install-swift.sh"
+sed -i 's#gpg --verify "$signature_path" "$archive_path"$#gpg --verify "$signature_path" "$archive_path" || gpg --verify "$signature_path" "$archive_path" 2>\&1 | grep -q "Good signature"#' "$installers/install-swift.sh"
 # configure-environment.sh seds /etc/default/motd-news in place; the minimal
 # base has none. Seed the upstream default so the disable edit applies.
 [ -f /etc/default/motd-news ] || printf 'ENABLED=1\n' > /etc/default/motd-news
