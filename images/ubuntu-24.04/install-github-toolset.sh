@@ -45,6 +45,12 @@ cp -r "$repo/scripts/build/." "$installers/"
 cp -r "$repo/scripts/tests" "$image_folder/tests"
 cp -r "$repo/assets/post-gen" "$image_folder/post-generation"
 cp "$repo/toolsets/toolset-2404-arm64.json" "$installers/toolset.json"
+# The toolset's cmd_packages lists the virtual package "netcat", which apt
+# refuses to resolve between its two providers. Install the provider the
+# hosted images carry and teach the Apt pester test its command name (the
+# binary is nc, via update-alternatives).
+sed -i 's/"netcat"/"netcat-openbsd"/' "$installers/toolset.json"
+sed -i '/"net-tools" *{ *\$toolName = "netstat"; break }/a\            "netcat-openbsd"    { $toolName = "nc"; break }' "$image_folder/tests/Apt.Tests.ps1"
 
 export HELPER_SCRIPTS="$helpers"
 # configure-system.sh reads HELPER_SCRIPT_FOLDER (pkr.hcl passes both names).
@@ -104,10 +110,9 @@ SOURCES
     fi
 fi
 apt-get -o DPkg::Lock::Timeout=600 update
-# netcat-openbsd preinstalls the provider for the toolset's virtual "netcat"
-# package (apt refuses to choose between two providers); openssl provides
-# /etc/ssl/openssl.cnf which configure-environment.sh edits in place.
-apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl netcat-openbsd
+# openssl provides /etc/ssl/openssl.cnf which configure-environment.sh
+# edits in place.
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl
 # configure-environment.sh seds /etc/default/motd-news in place; the minimal
 # base has none. Seed the upstream default so the disable edit applies.
 [ -f /etc/default/motd-news ] || printf 'ENABLED=1\n' > /etc/default/motd-news
