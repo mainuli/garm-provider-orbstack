@@ -104,7 +104,10 @@ SOURCES
     fi
 fi
 apt-get -o DPkg::Lock::Timeout=600 update
-apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl
+# netcat-openbsd preinstalls the provider for the toolset's virtual "netcat"
+# package (apt refuses to choose between two providers); openssl provides
+# /etc/ssl/openssl.cnf which configure-environment.sh edits in place.
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl netcat-openbsd
 # configure-environment.sh seds /etc/default/motd-news in place; the minimal
 # base has none. Seed the upstream default so the disable edit applies.
 [ -f /etc/default/motd-news ] || printf 'ENABLED=1\n' > /etc/default/motd-news
