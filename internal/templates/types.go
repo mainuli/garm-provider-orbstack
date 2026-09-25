@@ -19,7 +19,11 @@ type Manifest struct {
 	// template machine (for example "noble" for Ubuntu 24.04). Template
 	// validation compares against this observed value, never a hardcoded
 	// marketing version.
-	OSVersion       string            `json:"os_version"`
+	OSVersion string `json:"os_version"`
+	// Variant is the software scope: "minimal" (curated runner-only set)
+	// or "full" (the pinned official actions/runner-images Ubuntu 24.04
+	// toolset, matching GitHub's hosted ubuntu-24.04 image).
+	Variant         string            `json:"variant"`
 	RecipeSHA256    string            `json:"recipe_sha256"`
 	Arch            string            `json:"arch"`
 	RunnerFilename  string            `json:"runner_filename"`

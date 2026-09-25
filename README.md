@@ -8,6 +8,7 @@ Status: **implementation complete; runtime acceptance gates against a published 
 
 - **Native macOS GARM service.** The GARM controller (`garm`) runs as a launchd LaunchAgent under the OrbStack owner account — no Docker, no SSH, no inbound webhook. GARM executes `garm-provider-orbstack` directly as its external provider (interface `v0.1.0`), and the provider drives OrbStack through `orbctl`.
 - **Ephemeral copy-on-write runners.** Each runner is a clone of a sealed, immutable, credential-free Ubuntu 24.04 template machine: per-clone CPU/memory/disk limits and isolation are applied while the clone is still stopped, before first boot. Job workspaces and guest Docker state die with the machine.
+- **Optional full ubuntu-latest parity.** `template build --variant full` applies the pinned official [actions/runner-images](https://github.com/actions/runner-images) Ubuntu 24.04 arm64 toolset (multi-version toolcaches, browsers, CLIs, buildx/compose) so workflows behave like `ubuntu-latest` with no changes; builds take 1–3 h and produce a ~30–50 GB template. The default `minimal` variant stays a fast, curated set (git, curl, jq, build tools, Docker engine) and pairs well with `actions/setup-*`.
 - **Repository-free targets.** A target Mac needs only macOS + OrbStack 2.2.3+. `install.sh --version vX.Y.Z` downloads checksummed release binaries (helper, provider, `garm`, `garm-cli` — built from the pinned upstream tag) and nothing else.
 
 ## Install (from a release)

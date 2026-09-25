@@ -37,10 +37,21 @@ func embeddedRecipes() fs.FS {
 	return root
 }
 
+// The full variant applies the official actions/runner-images Ubuntu 24.04
+// arm64 toolset at a pinned tag+commit; both are verified inside the recipe
+// (the clone's HEAD must equal the commit) and recorded via RecipeSHA256.
+const (
+	runnerImagesTag    = "ubuntu24/20260920.314"
+	runnerImagesCommit = "e75633902841aa5479c759492b73409e6d317f12"
+)
+
 type BuildOptions struct {
 	Arch          string
 	RunnerVersion string
 	RunnerSHA256  string
+	// Variant selects the software scope: "minimal" (default) or "full"
+	// (official runner-images toolset).
+	Variant string
 }
 
 func (o BuildOptions) Validate() error {
@@ -53,27 +64,40 @@ func (o BuildOptions) Validate() error {
 	if !ValidSHA256(o.RunnerSHA256) {
 		return errors.New("runner-sha256 must be a verified 64-character SHA-256")
 	}
+	if o.Variant == "" {
+		o.Variant = "minimal"
+	}
+	if o.Variant != "minimal" && o.Variant != "full" {
+		return errors.New("variant must be minimal or full")
+	}
+	if o.Variant == "full" && o.Arch != "arm64" {
+		return errors.New("the full runner-images toolset variant is currently pinned to arm64")
+	}
 	return nil
 }
 
-func recipe() ([]byte, []byte, string, error) {
+func recipe() ([]byte, []byte, []byte, string, error) {
 	prepare, err := fs.ReadFile(recipeFS, "prepare.sh")
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
 	}
 	seal, err := fs.ReadFile(recipeFS, "seal.sh")
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
+	}
+	toolset, err := fs.ReadFile(recipeFS, "install-github-toolset.sh")
+	if err != nil {
+		return nil, nil, nil, "", err
 	}
 	hash := sha256.New()
 	for _, entry := range []struct {
 		name string
 		data []byte
-	}{{"prepare.sh", prepare}, {"seal.sh", seal}} {
+	}{{"prepare.sh", prepare}, {"seal.sh", seal}, {"install-github-toolset.sh", toolset}} {
 		fmt.Fprintf(hash, "%s\x00%d\x00", entry.name, len(entry.data))
 		hash.Write(entry.data)
 	}
-	return prepare, seal, hex.EncodeToString(hash.Sum(nil)), nil
+	return prepare, seal, toolset, hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // Build creates a new credential-free machine. No existing template is updated
@@ -87,7 +111,7 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 	if err != nil {
 		return Manifest{}, err
 	}
-	prepare, seal, recipeHash, err := recipe()
+	prepare, seal, toolset, recipeHash, err := recipe()
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -100,7 +124,11 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return Manifest{}, err
 	}
-	imageID := fmt.Sprintf("ubuntu-24.04-%s-%s-%s", options.Arch, options.RunnerVersion, hex.EncodeToString(nonce[:]))
+	variant := options.Variant
+	if variant == "" {
+		variant = "minimal"
+	}
+	imageID := fmt.Sprintf("ubuntu-24.04-%s-%s-%s-%s", options.Arch, variant, options.RunnerVersion, hex.EncodeToString(nonce[:]))
 	machineName := "garm-template-" + options.Arch + "-" + hex.EncodeToString(nonce[:])
 	if err := orb.Create(ctx, orbstack.CreateOptions{Name: machineName, Distro: "ubuntu", Version: "24.04", Arch: options.Arch, User: "runner", Isolated: true}); err != nil {
 		return Manifest{}, fmt.Errorf("template creation outcome uncertain; inspect machine name %s: %w", machineName, err)
@@ -148,7 +176,7 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 	for _, script := range []struct {
 		path string
 		data []byte
-	}{{"/var/tmp/garm-template-build/prepare.sh", prepare}, {"/var/tmp/garm-template-build/seal.sh", seal}} {
+	}{{"/var/tmp/garm-template-build/prepare.sh", prepare}, {"/var/tmp/garm-template-build/seal.sh", seal}, {"/var/tmp/garm-template-build/install-github-toolset.sh", toolset}} {
 		if err := run([]string{"tee", script.path}, bytes.NewReader(script.data), io.Discard); err != nil {
 			return fail(err)
 		}
@@ -160,6 +188,14 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 	filename := fmt.Sprintf("actions-runner-linux-%s-%s.tar.gz", arch, options.RunnerVersion)
 	if err := run([]string{"sh", "/var/tmp/garm-template-build/prepare.sh", options.Arch, options.RunnerVersion, strings.ToLower(options.RunnerSHA256), filename}, nil, io.Discard); err != nil {
 		return fail(err)
+	}
+	if variant == "full" {
+		// Hours-long official toolset application; runs on the ambient
+		// build context (the CLI's signal context), not the controller
+		// operation timeout.
+		if err := run([]string{"bash", "/var/tmp/garm-template-build/install-github-toolset.sh", runnerImagesTag, runnerImagesCommit}, nil, io.Discard); err != nil {
+			return fail(err)
+		}
 	}
 	if err := run([]string{"sh", "/var/tmp/garm-template-build/seal.sh"}, nil, io.Discard); err != nil {
 		return fail(err)
@@ -173,7 +209,7 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 		return fail(err)
 	}
 	manifest := Manifest{SchemaVersion: SchemaVersion, ImageID: imageID, MachineID: machineID,
-		OSVersion: osVersion, RecipeSHA256: recipeHash, Arch: options.Arch, RunnerFilename: filename,
+		OSVersion: osVersion, Variant: variant, RecipeSHA256: recipeHash, Arch: options.Arch, RunnerFilename: filename,
 		RunnerSHA256: strings.ToLower(options.RunnerSHA256), OrbStackVersion: version, Packages: packages}
 	metadata, err := json.Marshal(manifest)
 	if err != nil {

@@ -53,6 +53,9 @@ func validateManifest(m Manifest) error {
 	if strings.TrimSpace(m.OSVersion) == "" || strings.ContainsAny(m.OSVersion, "\x00\r\n") {
 		return errors.New("template manifest lacks the OrbStack-recorded OS version")
 	}
+	if m.Variant != "minimal" && m.Variant != "full" {
+		return errors.New("template manifest variant must be minimal or full")
+	}
 	if strings.TrimSpace(m.OrbStackVersion) == "" || len(m.Packages) == 0 {
 		return errors.New("template manifest lacks OrbStack or package provenance")
 	}

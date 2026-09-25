@@ -42,6 +42,7 @@ func runTemplateBuild(ctx context.Context, args []string) error {
 	flags.StringVar(&options.Arch, "arch", "", "runner architecture: arm64 or amd64 (emulated on Apple Silicon)")
 	flags.StringVar(&options.RunnerVersion, "runner-version", "", "pinned actions/runner release version, without v")
 	flags.StringVar(&options.RunnerSHA256, "runner-sha256", "", "verified SHA-256 of the official runner archive")
+	flags.StringVar(&options.Variant, "variant", "minimal", "software scope: minimal, or full for the pinned official actions/runner-images Ubuntu 24.04 toolset (arm64; builds take hours)")
 	path := flags.String("config", "", "host.toml (defaults to the installed host configuration)")
 	if err := flags.Parse(args); err != nil {
 		return err
