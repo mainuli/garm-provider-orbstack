@@ -220,7 +220,7 @@ step 'final system configuration'
 # The minimal base has no needrestart; drop configure-system.sh's
 # needrestart-only block rather than installing it (its apt hook restarts
 # services during job package installs, which could kill a runner unit).
-[ -f /etc/needrestart/needrestart.conf ] || sed -i '/needrestart\.conf/,+1d' "$installers/configure-system.sh"
+[ -f /etc/needrestart/needrestart.conf ] || sed -i '/^if is_ubuntu24; then$/,/^fi$/d' "$installers/configure-system.sh"
 run_step bash -e "$installers/configure-system.sh"
 
 rm -rf "$work"
