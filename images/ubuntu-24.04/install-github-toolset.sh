@@ -45,6 +45,25 @@ cp -r "$repo/scripts/build/." "$installers/"
 cp -r "$repo/scripts/tests" "$image_folder/tests"
 cp -r "$repo/assets/post-gen" "$image_folder/post-generation"
 cp "$repo/toolsets/toolset-2404-arm64.json" "$installers/toolset.json"
+# The helpers fetch api.github.com unauthenticated exactly once per call; a
+# full toolset needs more requests than the 60/hour shared quota, so a window
+# can be exhausted mid-build and the original code fails the whole build.
+# Back off across the hourly reset instead (success path unchanged).
+python3 - "$helpers/install.sh" <<'PYADAPT'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '    json=$(curl -fsSL "https://api.github.com/repos/${repo}/releases?per_page=${page_size}")'
+new = (
+    '    for attempt in $(seq 1 16); do\n'
+    '        json=$(curl -fsSL "https://api.github.com/repos/${repo}/releases?per_page=${page_size}") && break\n'
+    '        echo "api.github.com request failed (attempt ${attempt}); waiting 300s for the quota window" >&2\n'
+    '        sleep 300\n'
+    '    done'
+)
+assert old in s, "upstream helper shape changed"
+open(path, "w").write(s.replace(old, new, 1))
+PYADAPT
 # The toolset's cmd_packages lists the virtual package "netcat", which apt
 # refuses to resolve between its two providers. Install the provider the
 # hosted images carry and teach the Apt pester test its command name (the
