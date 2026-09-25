@@ -307,6 +307,11 @@ step 'final system configuration'
 # needrestart-only block rather than installing it (its apt hook restarts
 # services during job package installs, which could kill a runner unit).
 [ -f /etc/needrestart/needrestart.conf ] || sed -i '/^if is_ubuntu24; then$/,/^fi$/d' "$installers/configure-system.sh"
+# install-docker.sh changes the docker GID (groupmod) while the apt-started
+# daemon is running with the old group; its un-retried conditional start then
+# fails in OrbStack guests ("Job for docker.service failed"). Restart the
+# daemon after the GID change, with retries.
+sed -i 's#systemctl is-active --quiet docker.service || systemctl start docker.service#for _gd in $(seq 1 5); do systemctl restart docker.service \&\& break; echo "docker restart retry ${_gd}" >\&2; sleep 10; done#' "$installers/install-docker.sh"
 run_step bash -e "$installers/configure-system.sh"
 
 rm -rf "$work"
