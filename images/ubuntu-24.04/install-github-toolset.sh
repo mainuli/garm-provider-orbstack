@@ -98,7 +98,10 @@ SOURCES
     fi
 fi
 apt-get -o DPkg::Lock::Timeout=600 update
-apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl
+# configure-environment.sh seds /etc/default/motd-news in place; the minimal
+# base has none. Seed the upstream default so the disable edit applies.
+[ -f /etc/default/motd-news ] || printf 'ENABLED=1\n' > /etc/default/motd-news
 sed -i -e 's/^apt-get install /apt-get install -y /' -e 's/^apt-get dist-upgrade$/apt-get dist-upgrade -y/' "$installers/install-ms-repos.sh"
 
 step 'apt sources and limits'
@@ -202,7 +205,6 @@ sed -i 's|\$HOME|/home/runner|g' /etc/environment
 # /etc/garm-template is (re)created here first: the builder's later install -d
 # is idempotent, but this redirection must not depend on it.
 install -d -m 0755 /home/runner/actions-runner /etc/garm-template
-grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /etc/garm-template/runner.env || true
 # The runner's .env is dotenv format: plain KEY=VALUE lines, no export prefix.
 grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /home/runner/actions-runner/.env
 chown runner:runner /home/runner/actions-runner/.env
