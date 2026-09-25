@@ -6,6 +6,12 @@
 #
 # The builder discards guest stdout/stderr; keep the full log on the retained
 # machine for post-mortem inspection.
+#
+# Quota note: the pinned upstream helpers make ~25-40 unauthenticated
+# api.github.com calls (hard cap: 60/hour shared by everything behind the
+# host IP). Start a full build only with a mostly unused hourly quota, and
+# never place a GitHub token in the guest: it would be sealed into the
+# template.
 exec >>/var/log/garm-toolset-build.log 2>&1
 set -euo pipefail
 
@@ -202,9 +208,7 @@ if [ -d /etc/skel ] && [ -n "$(ls -A /etc/skel 2>/dev/null)" ]; then
     chown -R runner:runner /home/runner
 fi
 sed -i 's|\$HOME|/home/runner|g' /etc/environment
-# /etc/garm-template is (re)created here first: the builder's later install -d
-# is idempotent, but this redirection must not depend on it.
-install -d -m 0755 /home/runner/actions-runner /etc/garm-template
+install -d -m 0755 /home/runner/actions-runner
 # The runner's .env is dotenv format: plain KEY=VALUE lines, no export prefix.
 grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /home/runner/actions-runner/.env
 chown runner:runner /home/runner/actions-runner/.env
