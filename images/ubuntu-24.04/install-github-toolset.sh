@@ -113,6 +113,16 @@ apt-get -o DPkg::Lock::Timeout=600 update
 # openssl provides /etc/ssl/openssl.cnf which configure-environment.sh
 # edits in place.
 apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl
+# install-swift.sh imports nine PGP keys through ONE un-retried keyserver
+# call; keyserver.ubuntu.com intermittently returns a subset, which aborts
+# the multi-hour build at signature verification. Pre-import with retries.
+swift_keys="'7463A81A4B2EEA1B551FFBCFD441C977412B37AD' '1BE1E29A084CB305F397D62A9F597F4D21A56D5F' 'A3BAFD3556A59079C06894BD63BC1CFE91D306C6' '5E4DF843FB065D7F7E24FBA2EF5430F071E1B235' '8513444E2DA36B7C1659AF4D7638F1FB2B2B08C4' 'A62AE125BBBFBB96A6E042EC925CC1CCED3D1561' '8A7495662C3CD4AE18D95637FAF6989E1BC16FEA' 'E813C892820A6FA13755B268F167DF1ACF9CE069' '52BB7E3DE28A71BE22EC05FFEF80A866B47A981F'"
+for attempt in 1 2 3 4 5; do
+    eval gpg --keyserver hkps://keyserver.ubuntu.com:443 --recv-keys $swift_keys && break
+    echo "swift key import attempt $attempt failed; retrying" >&2
+    sleep 15
+done
+gpg --list-keys EF80A866B47A981F >/dev/null 2>&1 || { echo 'swift signing key EF80A866B47A981F unobtainable' >&2; exit 1; }
 # configure-environment.sh seds /etc/default/motd-news in place; the minimal
 # base has none. Seed the upstream default so the disable edit applies.
 [ -f /etc/default/motd-news ] || printf 'ENABLED=1\n' > /etc/default/motd-news
