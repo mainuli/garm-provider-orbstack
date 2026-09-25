@@ -153,16 +153,15 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 		stopErr := orb.Stop(stopCtx, machineID)
 		return Manifest{}, fmt.Errorf("template %s retained for inspection (name %s): %w", machineID, machineName, errors.Join(cause, stopErr))
 	}
-	flavor, ok := host.Flavors["default"]
-	if !ok {
-		keys := make([]string, 0, len(host.Flavors))
-		for key := range host.Flavors {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		flavor = host.Flavors[keys[0]]
-	}
-	if err := orb.ApplySettings(ctx, machineName, orbstack.MachineSettings{CPUs: flavor.CPUs, MemoryMiB: flavor.MemoryMiB, DiskBytes: flavor.DiskBytes, Isolated: true}); err != nil {
+	// A template machine is a build context, not a runner: the default
+	// flavor's runner-sized resource caps (2 CPU / 4 GiB) OOM-kill a full
+	// toolset install (multi-GB toolchains, browsers, Swift extracting ~4 GiB
+	// into /tmp under a 4 GiB cgroup), which stops the guest mid-build. Build
+	// templates with no resource caps (zero = unset: the whole-VM defaults
+	// apply); every clone gets the pool flavor caps applied by the provider
+	// before its first boot, so nothing about the template's own limits
+	// leaks into runners.
+	if err := orb.ApplySettings(ctx, machineName, orbstack.MachineSettings{Isolated: true}); err != nil {
 		return fail(err)
 	}
 	run := func(argv []string, input io.Reader, output io.Writer) error {
