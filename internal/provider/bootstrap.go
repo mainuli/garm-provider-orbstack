@@ -152,6 +152,15 @@ func (p *Provider) injectBootstrap(ctx context.Context, machineID string, plan b
 		if err := p.guest(ctx, machineID, []string{"rm", "-rf", "/home/runner/actions-runner"}, nil); err != nil {
 			return err
 		}
+		// Full-variant templates carry the hosted-toolcache environment in
+		// /etc/garm-template/runner.env and materialize it as the runner's
+		// .env (GARM's JIT bootstrap only sources PATH and a fixed key
+		// list, so setup-* actions need it to find /opt/hostedtoolcache).
+		// The directory removal above deleted that .env; rebuild it.
+		if err := p.guest(ctx, machineID, []string{"sh", "-c",
+			"if [ -f /etc/garm-template/runner.env ]; then install -d -m 0755 -o runner -g runner /home/runner/actions-runner && sed 's|^|export |' /etc/garm-template/runner.env > /home/runner/actions-runner/.env && chown runner:runner /home/runner/actions-runner/.env && chmod 0644 /home/runner/actions-runner/.env; fi"}, nil); err != nil {
+			return err
+		}
 	}
 	if err := p.guest(ctx, machineID, []string{"install", "-d", "-m", "0711", "-o", "root", "-g", "root", "/run/garm"}, nil); err != nil {
 		return err

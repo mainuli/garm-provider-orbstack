@@ -1,15 +1,12 @@
 #!/bin/bash
-# Applies the pinned official actions/runner-images Ubuntu 24.04 toolset to a
-# NEW template build (--variant full). Runs only at build time, as root, inside
-# the template machine; never on runner clones. The result matches the software
-# set of GitHub's hosted ubuntu-24.04 arm64 image.
+# Applies the pinned official actions/runner-images Ubuntu 24.04 arm64 toolset
+# to a NEW template build (--variant full). Runs only at build time, as root,
+# inside the template machine; never on runner clones. The result matches the
+# software set of GitHub's hosted ubuntu-24.04 arm64 image.
 #
-# Deviations from the official packer sequence (each Azure-image-only):
-#   - no configure-apt-mock.sh, no waagent deprovision, no imagedata for Azure
-#   - no SoftwareReport/RunAll-Tests suite (the builder captures dpkg output
-#     into the manifest instead)
-#   - no reboot between install and cleanup (OrbStack machines reboot is
-#     unnecessary for this flow)
+# The builder discards guest stdout/stderr; keep the full log on the retained
+# machine for post-mortem inspection.
+exec >>/var/log/garm-toolset-build.log 2>&1
 set -euo pipefail
 
 tag=$1
@@ -28,41 +25,65 @@ if [ "$actual_commit" != "$expected_commit" ]; then
     exit 1
 fi
 
+# Mirror packer's file provisioners exactly: helpers, installers (scripts/build),
+# tests and post-generation assets all live under /imagegeneration, and the
+# pinned scripts hard-code those paths (Helpers.psm1, invoke-tests.sh,
+# configure-system.sh).
 repo="$work/repo/images/ubuntu"
-helpers=/image-generation/helpers
-installers=/image-generation/installers
-image_folder=/image-generation
-mkdir -p "$helpers" "$installers" "$image_folder"
+image_folder=/imagegeneration
+helpers="$image_folder/helpers"
+installers="$image_folder/installers"
+mkdir -p "$helpers" "$installers"
 cp -r "$repo/scripts/helpers/." "$helpers/"
 cp -r "$repo/scripts/build/." "$installers/"
+cp -r "$repo/scripts/tests" "$image_folder/tests"
+cp -r "$repo/assets/post-gen" "$image_folder/post-generation"
 cp "$repo/toolsets/toolset-2404-arm64.json" "$installers/toolset.json"
 
 export HELPER_SCRIPTS="$helpers"
+# configure-system.sh reads HELPER_SCRIPT_FOLDER (pkr.hcl passes both names).
+export HELPER_SCRIPT_FOLDER="$helpers"
 export INSTALLER_SCRIPT_FOLDER="$installers"
 export IMAGE_FOLDER="$image_folder"
 export IMAGE_OS=ubuntu24
-export IMAGE_VERSION="$tag"
+# Hosted images carry the dotted version; the tag prefix is only a git ref.
+export IMAGE_VERSION="${tag#*/}"
 export ARCHITECTURE=arm64
 export DEBIAN_FRONTEND=noninteractive
 
-# Minimal imagedata so official scripts that read it succeed without the Azure
-# agent machinery.
-printf 'IMAGE_VERSION=%s\nIMAGE_OS=ubuntu24\n' "$tag" > "$image_folder/imagedata.json"
+# Documented OrbStack adaptations of Azure-VM-only logic inside otherwise
+# required scripts (this machine has no cloud-init, no GRUB, a btrfs root and
+# no waagent):
+#   - configure-apt-sources.sh copies ubuntu.sources into /etc/cloud/templates
+#     at the end; create the directory so the copy succeeds (the sealed image
+#     keeps /etc/cloud for the cloud-init.disabled marker anyway).
+#   - configure-environment.sh edits /etc/waagent.conf, requires an ext4 root
+#     and runs update-grub; drop exactly those blocks.
+install -d -m 0755 /etc/cloud/templates
+sed -i -e '/waagent\.conf/d' -e '/root_fs_type=/,/update-grub$/d' "$installers/configure-environment.sh"
 
 step() { printf '\n===== toolset step: %s =====\n' "$*" >&2; }
 
+# Packer runs every provisioner through a fresh `sudo sh -c`, whose PAM
+# session re-reads /etc/environment — that is how AGENT_TOOLSDIRECTORY,
+# RUNNER_TOOL_CACHE, PIPX_* and friends written by earlier installers reach
+# later ones. Mirror it per step. Upstream scripts also rely on their
+# `#!/bin/bash -e` shebang; invoke with bash -e because `bash file` would
+# treat the shebang as a comment and silently drop errexit.
+run_step() { sudo --preserve-env=HELPER_SCRIPTS,HELPER_SCRIPT_FOLDER,INSTALLER_SCRIPT_FOLDER,IMAGE_FOLDER,IMAGE_OS,IMAGE_VERSION,ARCHITECTURE,DEBIAN_FRONTEND "$@"; }
+
 step 'apt sources and limits'
-bash "$installers/install-ms-repos.sh"
-bash "$installers/configure-apt-sources.sh"
-bash "$installers/configure-apt.sh"
-bash "$installers/configure-limits.sh"
-bash "$installers/configure-environment.sh"
-bash "$installers/install-apt-vital.sh"
+run_step bash -e "$installers/install-ms-repos.sh"
+run_step bash -e "$installers/configure-apt-sources.sh"
+run_step bash -e "$installers/configure-apt.sh"
+run_step bash -e "$installers/configure-limits.sh"
+run_step bash -e "$installers/configure-environment.sh"
+run_step bash -e "$installers/install-apt-vital.sh"
 
 step 'powershell (needed by the toolset installer itself)'
-bash "$installers/install-powershell.sh"
-pwsh -NoProfile -File "$installers/Install-PowerShellModules.ps1"
-pwsh -NoProfile -File "$installers/Install-PowerShellAzModules.ps1"
+run_step bash -e "$installers/install-powershell.sh"
+run_step pwsh -NoProfile -File "$installers/Install-PowerShellModules.ps1"
+run_step pwsh -NoProfile -File "$installers/Install-PowerShellAzModules.ps1"
 
 step 'language toolchains, CLIs, browsers, databases'
 for script in \
@@ -108,32 +129,53 @@ for script in \
     install-python.sh \
     install-zstd.sh \
     install-ninja.sh; do
-    bash "$installers/$script"
+    run_step bash -e "$installers/$script"
 done
 
 step 'docker engine (docker-ce replaces the transitional docker.io package)'
-bash "$installers/install-docker.sh"
+run_step bash -e "$installers/install-docker.sh"
 
 step 'pinned toolcache and docker plugins from toolset.json'
-pwsh -NoProfile -File "$installers/Install-Toolset.ps1"
-pwsh -NoProfile -File "$installers/Configure-Toolset.ps1"
+run_step pwsh -NoProfile -File "$installers/Install-Toolset.ps1"
+run_step pwsh -NoProfile -File "$installers/Configure-Toolset.ps1"
 
 step 'pipx packages'
-bash "$installers/install-pipx-packages.sh"
+run_step bash -e "$installers/install-pipx-packages.sh"
 
 step 'homebrew (as the non-root runner user)'
-su -s /bin/bash runner -c "cd /tmp && export HOME=/home/runner HELPER_SCRIPTS='$helpers' DEBIAN_FRONTEND=noninteractive && bash '$installers/install-homebrew.sh'"
+su -s /bin/bash runner -c "cd /tmp && export HOME=/home/runner HELPER_SCRIPTS='$helpers' DEBIAN_FRONTEND=noninteractive && bash -e '$installers/install-homebrew.sh'"
 
 step 'snap configuration (non-fatal: snapd is unavailable in some kernels)'
-if ! bash "$installers/configure-snap.sh"; then
+if ! run_step bash -e "$installers/configure-snap.sh"; then
     echo 'NOTE: configure-snap.sh failed; continuing without snap configuration' >&2
 fi
 
+step 'runner-account environment parity'
+# Upstream expects the hosted runner account to be created AFTER the toolset
+# (from /etc/skel) and post-generation to expand $HOME in /etc/environment;
+# neither happens on a runner clone. Materialize both now:
+#   1. skel -> the existing runner account (rustup/cargo, nvm, dotnet paths)
+#   2. literal /home/runner in /etc/environment
+#   3. /home/runner/actions-runner/.env with the non-PATH entries, because
+#      GARM's JIT bootstrap only sources env.sh (PATH + a fixed key list) and
+#      never re-reads /etc/environment, so setup-* actions would otherwise
+#      miss AGENT_TOOLSDIRECTORY/RUNNER_TOOL_CACHE and use _work/_tool.
+if [ -d /etc/skel ] && [ -n "$(ls -A /etc/skel 2>/dev/null)" ]; then
+    cp -r /etc/skel/. /home/runner/
+    chown -R runner:runner /home/runner
+fi
+sed -i 's|\$HOME|/home/runner|g' /etc/environment
+install -d -m 0755 /home/runner/actions-runner
+grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /etc/garm-template/runner.env || true
+sed 's|^|export |' /etc/garm-template/runner.env > /home/runner/actions-runner/.env
+chown runner:runner /home/runner/actions-runner /home/runner/actions-runner/.env
+chmod 0644 /home/runner/actions-runner/.env
+
 step 'official image cleanup'
-bash "$installers/cleanup.sh"
+run_step bash -e "$installers/cleanup.sh"
 
 step 'final system configuration'
-bash "$installers/configure-system.sh"
+run_step bash -e "$installers/configure-system.sh"
 
 rm -rf "$work"
 printf '\n===== toolset installation complete =====\n' >&2

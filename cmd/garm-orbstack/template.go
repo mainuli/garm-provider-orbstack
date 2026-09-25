@@ -59,8 +59,14 @@ func runTemplateBuild(ctx context.Context, args []string) error {
 	}
 	// Image creation includes package installation and archive verification;
 	// unlike per-runner bootstrap it is an explicit long-running operation.
-	ctx, cancel := context.WithTimeout(ctx, time.Hour)
-	defer cancel()
+	// The minimal recipe fits a one-hour ceiling; the full runner-images
+	// toolset legitimately takes hours, so it runs on the signal context
+	// alone (cancellable, never silently killed mid-install).
+	if options.Variant != "full" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Hour)
+		defer cancel()
+	}
 	manifest, err := templates.Build(ctx, resolved, options)
 	if err != nil {
 		return err

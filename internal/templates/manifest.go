@@ -84,6 +84,12 @@ func LoadManifest(path string) (Manifest, error) {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return Manifest{}, errors.New("template manifest contains trailing data")
 	}
+	// Schema 1 (v0.1.0) manifests predate the variant field; they were all
+	// built from the curated minimal recipe, so a missing variant reads as
+	// minimal and registered v0.1.0 images keep working after an upgrade.
+	if manifest.Variant == "" {
+		manifest.Variant = "minimal"
+	}
 	if err := validateManifest(manifest); err != nil {
 		return Manifest{}, err
 	}

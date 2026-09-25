@@ -39,7 +39,8 @@ func embeddedRecipes() fs.FS {
 
 // The full variant applies the official actions/runner-images Ubuntu 24.04
 // arm64 toolset at a pinned tag+commit; both are verified inside the recipe
-// (the clone's HEAD must equal the commit) and recorded via RecipeSHA256.
+// (the clone's HEAD must equal the commit) and hashed into RecipeSHA256 via
+// the "runner-images-pin" entry, so bumping the pin always changes the hash.
 const (
 	runnerImagesTag    = "ubuntu24/20260920.314"
 	runnerImagesCommit = "e75633902841aa5479c759492b73409e6d317f12"
@@ -93,7 +94,7 @@ func recipe() ([]byte, []byte, []byte, string, error) {
 	for _, entry := range []struct {
 		name string
 		data []byte
-	}{{"prepare.sh", prepare}, {"seal.sh", seal}, {"install-github-toolset.sh", toolset}} {
+	}{{"prepare.sh", prepare}, {"seal.sh", seal}, {"install-github-toolset.sh", toolset}, {"runner-images-pin", []byte(runnerImagesTag + "\x00" + runnerImagesCommit)}} {
 		fmt.Fprintf(hash, "%s\x00%d\x00", entry.name, len(entry.data))
 		hash.Write(entry.data)
 	}

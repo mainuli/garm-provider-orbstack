@@ -200,3 +200,22 @@ func TestRecipeHashCoversToolsetScript(t *testing.T) {
 		t.Fatal("toolset recipe script missing or wrong content")
 	}
 }
+
+// TestLoadManifestV010ShapeWithoutVariant pins upgrade compatibility: schema-1
+// manifests written by v0.1.0 (no variant key) must load as minimal variants
+// so registered images keep working after a version change.
+func TestLoadManifestV010ShapeWithoutVariant(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"schema_version":1,"image_id":"ubuntu-24.04-arm64-2.333.0-abc","machine_id":"01M","os_version":"noble","recipe_sha256":"` + strings.Repeat("a", 64) + `","arch":"arm64","runner_filename":"actions-runner-linux-arm64-2.333.0.tar.gz","runner_sha256":"` + strings.Repeat("b", 64) + `","orbstack_version":"2.2.3","packages":{"git":"1:2.43.0"}}`
+	path := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("v0.1.0-shaped manifest must load: %v", err)
+	}
+	if m.Variant != "minimal" {
+		t.Fatalf("missing variant must normalize to minimal, got %q", m.Variant)
+	}
+}
