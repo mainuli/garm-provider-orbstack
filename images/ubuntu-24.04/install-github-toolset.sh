@@ -77,9 +77,10 @@ step 'normalize the minimal LXC-style base to the cloud/server layout'
 # /etc/apt/sources.list on ports.ubuntu.com, no deb822 ubuntu.sources, and
 # without the server seed's wget/man-db/needrestart. The pinned scripts
 # assume the cloud-image layout, so normalize it first:
-#   1. synthesize the deb822 sources the scripts expect (same azure.archive
-#      URIs the official cloud image carries; the upstream script then
-#      converts them to its mirror+file failover) and disable the ports list
+#   1. synthesize the deb822 sources the scripts expect. arm64 noble is
+#      served only by ports.ubuntu.com (the x64 cloud image's azure.archive
+#      URIs 404 for binary-arm64); upstream's azure.archive sed intentionally
+#      does not match arm64 sources, so a single ports stanza is correct
 #   2. install wget (install-ms-repos.sh fetches with it) and man-db
 #      (configure-environment.sh reconfigures it)
 #   3. patch install-ms-repos.sh's bare apt-get calls with -y (errexit +
@@ -87,14 +88,8 @@ step 'normalize the minimal LXC-style base to the cloud/server layout'
 if [ ! -f /etc/apt/sources.list.d/ubuntu.sources ]; then
     cat > /etc/apt/sources.list.d/ubuntu.sources <<'SOURCES'
 Types: deb
-URIs: http://azure.archive.ubuntu.com/ubuntu/
-Suites: noble noble-updates noble-backports
-Components: main restricted universe multiverse
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-Types: deb
-URIs: http://security.ubuntu.com/ubuntu/
-Suites: noble-security
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: noble noble-updates noble-backports noble-security
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 SOURCES
