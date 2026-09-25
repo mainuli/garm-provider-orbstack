@@ -131,7 +131,12 @@ fi
 apt-get -o DPkg::Lock::Timeout=600 update
 # openssl provides /etc/ssl/openssl.cnf which configure-environment.sh
 # edits in place; gnupg provides gpg for the Swift key pre-import below.
-apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl gnupg
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl
+# configure-dpkg.sh force-installs the AMD64 build of libicu70 on Ubuntu
+# 24.04 with no architecture guard; on arm64 that resolves amd64 libc
+# dependencies and aborts with held broken packages. Restrict the block to
+# x64, where it belongs (arm64 uses the distro libicu74).
+sed -i 's/^if  is_ubuntu24 ; then$/if is_ubuntu24_x64; then/' "$installers/configure-dpkg.sh" gnupg
 # install-swift.sh imports nine PGP keys through ONE un-retried keyserver
 # call; keyserver.ubuntu.com intermittently returns a subset, which aborts
 # the multi-hour build at signature verification. Pre-import with retries.
