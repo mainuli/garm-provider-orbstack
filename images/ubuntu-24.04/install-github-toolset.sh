@@ -72,6 +72,14 @@ step() { printf '\n===== toolset step: %s =====\n' "$*" >&2; }
 # treat the shebang as a comment and silently drop errexit.
 run_step() { sudo --preserve-env=HELPER_SCRIPTS,HELPER_SCRIPT_FOLDER,INSTALLER_SCRIPT_FOLDER,IMAGE_FOLDER,IMAGE_OS,IMAGE_VERSION,ARCHITECTURE,DEBIAN_FRONTEND "$@"; }
 
+step 'base prerequisites for the upstream installers'
+# The OrbStack base ships curl but not wget (install-ms-repos.sh fetches the
+# MS repo package with wget), and install-ms-repos.sh calls apt-get without
+# -y, which aborts under errexit with no tty on stdin. Patch defensively.
+apt-get -o DPkg::Lock::Timeout=600 update
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget
+sed -i -e 's/^apt-get install /apt-get install -y /' -e 's/^apt-get dist-upgrade$/apt-get dist-upgrade -y/' "$installers/install-ms-repos.sh"
+
 step 'apt sources and limits'
 run_step bash -e "$installers/install-ms-repos.sh"
 run_step bash -e "$installers/configure-apt-sources.sh"
@@ -160,15 +168,23 @@ step 'runner-account environment parity'
 #      GARM's JIT bootstrap only sources env.sh (PATH + a fixed key list) and
 #      never re-reads /etc/environment, so setup-* actions would otherwise
 #      miss AGENT_TOOLSDIRECTORY/RUNNER_TOOL_CACHE and use _work/_tool.
+#      LIMITATION: when GARM requests a newer runner version than the template
+#      cache, the provider deletes this directory so the upstream script
+#      re-downloads the runner, and the seeded .env is not recreated on that
+#      path (recreating the directory would suppress the download); setup-*
+#      actions then fall back to _work/_tool until the template is rebuilt.
 if [ -d /etc/skel ] && [ -n "$(ls -A /etc/skel 2>/dev/null)" ]; then
     cp -r /etc/skel/. /home/runner/
     chown -R runner:runner /home/runner
 fi
 sed -i 's|\$HOME|/home/runner|g' /etc/environment
-install -d -m 0755 /home/runner/actions-runner
+# /etc/garm-template is (re)created here first: the builder's later install -d
+# is idempotent, but this redirection must not depend on it.
+install -d -m 0755 /home/runner/actions-runner /etc/garm-template
 grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /etc/garm-template/runner.env || true
-sed 's|^|export |' /etc/garm-template/runner.env > /home/runner/actions-runner/.env
-chown runner:runner /home/runner/actions-runner /home/runner/actions-runner/.env
+# The runner's .env is dotenv format: plain KEY=VALUE lines, no export prefix.
+grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /home/runner/actions-runner/.env
+chown runner:runner /home/runner/actions-runner/.env
 chmod 0644 /home/runner/actions-runner/.env
 
 step 'official image cleanup'

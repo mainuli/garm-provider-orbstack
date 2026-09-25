@@ -149,16 +149,14 @@ UMask=0077
 // upstream templates may contain set -x and bearer-token curl arguments there.
 func (p *Provider) injectBootstrap(ctx context.Context, machineID string, plan bootstrapPlan) error {
 	if plan.removeCache {
+		// The upstream install script downloads the runner only when this
+		// directory is absent, so it must stay deleted. Full-variant
+		// templates seed a hosted-toolcache .env at build time; on this
+		// version-mismatch path that seed is intentionally not recreated
+		// (a present-but-empty directory would suppress the download) and
+		// setup-* actions fall back to _work/_tool until the template is
+		// rebuilt. Documented limitation of the full variant.
 		if err := p.guest(ctx, machineID, []string{"rm", "-rf", "/home/runner/actions-runner"}, nil); err != nil {
-			return err
-		}
-		// Full-variant templates carry the hosted-toolcache environment in
-		// /etc/garm-template/runner.env and materialize it as the runner's
-		// .env (GARM's JIT bootstrap only sources PATH and a fixed key
-		// list, so setup-* actions need it to find /opt/hostedtoolcache).
-		// The directory removal above deleted that .env; rebuild it.
-		if err := p.guest(ctx, machineID, []string{"sh", "-c",
-			"if [ -f /etc/garm-template/runner.env ]; then install -d -m 0755 -o runner -g runner /home/runner/actions-runner && sed 's|^|export |' /etc/garm-template/runner.env > /home/runner/actions-runner/.env && chown runner:runner /home/runner/actions-runner/.env && chmod 0644 /home/runner/actions-runner/.env; fi"}, nil); err != nil {
 			return err
 		}
 	}
