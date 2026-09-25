@@ -255,6 +255,15 @@ for script in \
     run_step bash -e "$installers/$script"
 done
 
+# The guest root is btrfs; overlay2 on it cannot manage whiteouts
+# (EIO "failed to register layer" during pulls) and loses native diff.
+# Reset the docker.io-era graph and pin dockerd to the native btrfs driver
+# before the upstream installer starts the new engine.
+systemctl stop docker.socket docker.service 2>/dev/null || true
+rm -rf /var/lib/docker
+install -d /etc/docker
+printf '{"storage-driver":"btrfs"}\n' > /etc/docker/daemon.json
+
 step 'docker engine (docker-ce replaces the transitional docker.io package)'
 run_step bash -e "$installers/install-docker.sh"
 
