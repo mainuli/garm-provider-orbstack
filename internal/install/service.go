@@ -219,12 +219,26 @@ func stopService(ctx context.Context, launchctl string) error {
 	if _, err := outputCommand(ctx, launchctl, "bootout", launchTarget()); err != nil {
 		return fmt.Errorf("bootout LaunchAgent: %w", err)
 	}
-	_, loaded, err = launchStatus(ctx, launchctl)
-	if err != nil {
-		return err
-	}
-	if loaded {
-		return errors.New("LaunchAgent remains loaded; refusing to mutate or back up live controller data")
+	// launchd removes KeepAlive jobs asynchronously; the job can still show
+	// loaded for a while after a successful bootout. Poll briefly before
+	// refusing, or every upgrade and uninstall races a non-stuck service.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		_, loaded, err = launchStatus(ctx, launchctl)
+		if err != nil {
+			return err
+		}
+		if !loaded {
+			break
+		}
+		if time.Now().After(deadline) {
+			return errors.New("LaunchAgent remains loaded 30s after bootout; refusing to mutate or back up live controller data")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	return waitProcessExit(ctx, pid)
 }

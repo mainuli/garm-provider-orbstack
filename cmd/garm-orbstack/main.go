@@ -59,6 +59,8 @@ func main() {
 			err = runTemplateBuild(ctx, subRest)
 		case "list":
 			err = runTemplateList(ctx, subRest)
+		case "remove":
+			err = runTemplateRemove(ctx, subRest)
 		default:
 			usage(os.Stderr)
 			os.Exit(2)
@@ -105,6 +107,7 @@ Commands:
   doctor                  Check installation health (exit 2: no template)
   template build          Build and register a runner template machine
   template list           List registered template images
+  template remove        Deregister a template and delete its machine
   recover                 Adopt or release a pending reservation
   garm-cli <args...>      Scoped garm-cli wrapper
   uninstall               Remove the managed installation (preserves data)

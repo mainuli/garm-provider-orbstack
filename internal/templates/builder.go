@@ -19,6 +19,7 @@ import (
 	assets "github.com/mainuli/garm-provider-orbstack"
 	"github.com/mainuli/garm-provider-orbstack/internal/config"
 	"github.com/mainuli/garm-provider-orbstack/internal/orbstack"
+	"github.com/mainuli/garm-provider-orbstack/internal/state"
 )
 
 // recipeFS is rooted at the embedded recipe directory. An explicit operator
@@ -357,4 +358,48 @@ func List(ctx context.Context, host config.Host) ([]Manifest, error) {
 		result = append(result, manifest)
 	}
 	return result, nil
+}
+
+// Remove deregisters a template image and deletes its machine. It refuses
+// while any registry record still references the image (drain the pool
+// first), never deletes a machine outside the registered mapping, and
+// routes the machine deletion through the ID-addressed provider path.
+func Remove(ctx context.Context, configPath, imageID string) error {
+	if imageID == "" {
+		return errors.New("image ID is required")
+	}
+	host, err := config.LoadHost(configPath)
+	if err != nil {
+		return err
+	}
+	image, registered := host.Images[imageID]
+	if !registered {
+		return fmt.Errorf("image %s is not registered", imageID)
+	}
+	records, err := state.Snapshot(ctx, host.StateDir, host.ControllerID)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.ImageID == imageID {
+			return fmt.Errorf("runner %s still uses image %s; drain the pool before removing the template", record.RunnerName, imageID)
+		}
+	}
+	orb := orbstack.New(host.OrbctlPath)
+	if err := orb.Delete(ctx, image.MachineID); err != nil {
+		return fmt.Errorf("deleting template machine (image stays registered): %w", err)
+	}
+	if err := config.UpdateHost(configPath, func(h *config.Host) error {
+		if _, ok := h.Images[imageID]; !ok {
+			return fmt.Errorf("image %s disappeared concurrently", imageID)
+		}
+		delete(h.Images, imageID)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := os.Remove(image.ManifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("template deregistered but manifest %s remains: %w", image.ManifestPath, err)
+	}
+	return nil
 }

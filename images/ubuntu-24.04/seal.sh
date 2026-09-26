@@ -58,10 +58,11 @@ rm -rf /home/runner/actions-runner/_work /home/runner/actions-runner/_diag \
     /home/runner/.cache /root/.cache
 rm -f /home/runner/.bash_history /root/.bash_history /etc/ssh/ssh_host_* \
     /var/log/garm-bootstrap.log /etc/systemd/system/garm-bootstrap.service
-# Best-effort: some toolset logs (e.g. postgresql's) deny writes even to
-# root under OrbStack; truncate when possible, else remove, else leave (the
-# sensitive-wipe already removed credentials elsewhere).
-find /var/log -type f -exec sh -c 'truncate -s 0 "$1" 2>/dev/null || rm -f "$1" 2>/dev/null || true' sh {} \;
+# fs.protected_regular=2 denies O_CREAT opens of files owned by others in
+# sticky group-writable directories (e.g. postgresql's logs) even for root;
+# truncate without -c trips it. -c opens existing files without O_CREAT,
+# keeping truncation strict: any other failure still fails the seal.
+find /var/log -type f -exec truncate -c -s 0 {} +
 # Preserve build inputs until this shell exits; the builder removes the directory
 # using a separate command. All metadata under /etc/garm-template is nonsecret.
 rm -f /var/lib/dbus/machine-id
