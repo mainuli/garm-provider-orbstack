@@ -139,13 +139,6 @@ func TestStopServicePollsThroughSlowBootout(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "launchctl-slow.log")
 	delayFile := filepath.Join(t.TempDir(), "bootout-delay")
 	t.Setenv("LAUNCHCTL_DELAY_FILE", delayFile)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	p, err := pathsFor(home, "", "v1.0.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = p
 	launchctl := fakeSlowLaunchctl(t, log, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -156,7 +149,7 @@ func TestStopServicePollsThroughSlowBootout(t *testing.T) {
 	// final print that errors.
 	raw, _ := os.ReadFile(log)
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) < 6 {
+	if len(lines) < 7 {
 		t.Fatalf("expected at least 6 launchctl invocations (bootout + 5 prints), got %d:\n%s", len(lines), string(raw))
 	}
 }

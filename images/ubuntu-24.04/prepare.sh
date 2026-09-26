@@ -28,6 +28,12 @@ apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
     ca-certificates curl git jq tar gzip unzip build-essential sudo \
     libicu74 libssl3t64 zlib1g libkrb5-3 libcurl4t64 liblttng-ust1t64 \
     docker.io psmisc
+id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
+usermod --shell /bin/bash --append --groups docker runner
+printf '%s\n' 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/garm-runner
+chmod 0440 /etc/sudoers.d/garm-runner
+visudo -cf /etc/sudoers.d/garm-runner
+
 # BuildKit's docker-container driver uses overlayfs internally, which is
 # not permitted on OrbStack guests (same filesystem limit as the btrfs pin
 # above). The native snapshotter (which copies layers instead of overlaying)
@@ -38,15 +44,10 @@ install -d -m 0755 -o runner -g runner /home/runner/.docker /home/runner/.docker
 printf '[worker.oci]\nsnapshotter = "native"\n' > /home/runner/.docker/buildx/buildkitd.default.toml
 chown runner:runner /home/runner/.docker/buildx/buildkitd.default.toml
 
-id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
-usermod --shell /bin/bash --append --groups docker runner
-printf '%s\n' 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/garm-runner
-# Rootless podman needs subuid/subgid ranges for the runner user
-# (upstream install-container-tools.sh sets these for the build user only)
-printf 'runner:100000:65536\n' >> /etc/subuid
-printf 'runner:100000:65536\n' >> /etc/subgid
-chmod 0440 /etc/sudoers.d/garm-runner
-visudo -cf /etc/sudoers.d/garm-runner
+# Rootless podman (installed by the full variant) needs subordinate
+# ranges for runner; the pinned runner-images scripts add none
+grep -q '^runner:' /etc/subuid 2>/dev/null || printf 'runner:100000:65536\n' >> /etc/subuid
+grep -q '^runner:' /etc/subgid 2>/dev/null || printf 'runner:100000:65536\n' >> /etc/subgid
 systemctl enable --now docker.service
 # The storage pin must be effective: a dockerd that rejects the config or
 # ignores it (containerd store on) fails here instead of shipping a
