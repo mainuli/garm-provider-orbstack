@@ -31,6 +31,8 @@ Runners reach the controller at `https://host.orb.internal:9997`; the controller
 
 ## Security model
 
+- **Docker container-layer disk escape.** Per-machine `disk_bytes` limits do NOT cap Docker container layers (separate btrfs subvolumes). One job can fill the shared OrbStack data volume and starve every other runner plus the host's own machines. Mitigations: trusted repositories only (stated above); monitor free space on the OrbStack volume; per-container `--storage-opt size=` is available to jobs but not enforceable by the provider.
+
 - **Trusted-repository scope.** All OrbStack machines share one Linux kernel; isolated machines remove Mac filesystem/SSH integration but this is **not** a hostile multi-tenant VM boundary. Network-isolation settings are defense in depth, not host/LAN separation.
 - **ID-addressed lifecycle.** The provider never adopts or deletes machines by name. Known OrbStack 2.2.3 defect: `orbctl delete <ID>` segfaults in every form, so deletion uses a user-approved rename-composition (ID-addressed rename to a fresh unguessable name, binding re-verified, then delete of that exact name).
 - **Crash-safe reservations.** Runner state lives in an operator-owned, fsynced, flock-locked registry; a clone in flight holds its lock for the `orbctl` child's whole lifetime (verified by killing the helper mid-clone). Uncertain outcomes require explicit `garm-orbstack recover` — never absence-based success.
@@ -61,7 +63,7 @@ OrbStack requires a paid license for commercial/freelance/business use. This pro
 - **Gate 6**: 10-run performance timing — median end-to-end (dispatch → job start, includes clone + boot + JIT registration) **21 seconds** (min 20s, max 24s); zero package drift across all runs
 - **Disk caps**: enforced at the machine's rootfs subvolume (incompressible data hits ENOSPC at the configured limit; verified on a clone)
 - **Buildx docker-container**: works via native snapshotter (verified in real GitHub Actions jobs on both architectures)
-- **Podman rootless**: works in full-variant runners (verified on a clone with recipe-provisioned subuid ranges)
+- **Podman rootless**: fails in CI on v0.2.2 templates (no systemd user session); the `cgroupfs` drop-in in `prepare.sh` fixes it from the next rebuild (verified with a per-job `~/.config/containers/containers.conf` override)
 - **Kind**: not supported (OrbStack guest `/sys` remount privilege limitation)
 - Unit suites (`go test ./...`, `go test -race ./...`), capability probe, `actionlint`, `sh -n` all pass
 

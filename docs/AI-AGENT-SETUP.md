@@ -280,6 +280,7 @@ This stops the controller, takes a backup of the database, config, secrets, and 
 
 ## Known limitations
 
+- **Docker container layers**: NOT capped by per-machine `disk_bytes` (separate btrfs subvolumes). One job can fill the shared OrbStack volume. Monitor free space; use trusted repositories only
 - **Kind clusters**: not supported (OrbStack guest `/sys` remount privilege limitation)
 - **Buildx `docker-container` driver**: works via native snapshotter (slower than overlay)
 - **OrbStack `delete --by-ID`**: segfaults on 2.2.3; worked around internally via rename-composition
