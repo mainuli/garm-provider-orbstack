@@ -77,6 +77,32 @@ func (o BuildOptions) Validate() error {
 	return nil
 }
 
+// tailWriter keeps the last limit bytes written to it, so provisioning
+// errors can carry a guest stderr tail instead of a bare exit status.
+type tailWriter struct {
+	limit int
+	buf   []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.limit {
+		t.buf = t.buf[len(t.buf)-t.limit:]
+	}
+	return len(p), nil
+}
+
+func (t *tailWriter) summary() string {
+	s := strings.TrimSpace(string(t.buf))
+	if s == "" {
+		return "no guest stderr"
+	}
+	if len(s) > 512 {
+		s = "..." + s[len(s)-512:]
+	}
+	return "guest stderr tail: " + s
+}
+
 func recipe() ([]byte, []byte, []byte, string, error) {
 	prepare, err := fs.ReadFile(recipeFS, "prepare.sh")
 	if err != nil {
@@ -165,8 +191,9 @@ func Build(ctx context.Context, configPath string, options BuildOptions) (Manife
 		return fail(err)
 	}
 	run := func(argv []string, input io.Reader, output io.Writer) error {
-		if err := orb.Run(ctx, orbstack.RunOptions{Machine: machineID, User: "root", Command: argv, Stdin: input, Stdout: output, Stderr: io.Discard}); err != nil {
-			return fmt.Errorf("template provisioning command failed: %w", err)
+		errTail := &tailWriter{limit: 4096}
+		if err := orb.Run(ctx, orbstack.RunOptions{Machine: machineID, User: "root", Command: argv, Stdin: input, Stdout: output, Stderr: errTail}); err != nil {
+			return fmt.Errorf("template provisioning command failed (%s): %w", errTail.summary(), err)
 		}
 		return nil
 	}
