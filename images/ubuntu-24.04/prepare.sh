@@ -28,6 +28,16 @@ apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
     ca-certificates curl git jq tar gzip unzip build-essential sudo \
     libicu74 libssl3t64 zlib1g libkrb5-3 libcurl4t64 liblttng-ust1t64 \
     docker.io psmisc
+# BuildKit's docker-container driver uses overlayfs internally, which is
+# not permitted on OrbStack guests (same filesystem limit as the btrfs pin
+# above). The native snapshotter (which copies layers instead of overlaying)
+# works. buildx reads this file when creating docker-container builders
+# without an explicit --buildkitd-config, which is how docker/setup-buildx-action
+# creates its builders. Listed explicitly so the parent gets the right owner.
+install -d -m 0755 -o runner -g runner /home/runner/.docker /home/runner/.docker/buildx
+printf '[worker.oci]\nsnapshotter = "native"\n' > /home/runner/.docker/buildx/buildkitd.default.toml
+chown runner:runner /home/runner/.docker/buildx/buildkitd.default.toml
+
 id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
 usermod --shell /bin/bash --append --groups docker runner
 printf '%s\n' 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/garm-runner
