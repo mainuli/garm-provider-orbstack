@@ -259,12 +259,24 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 	if strings.TrimSpace(machineID) == "" {
 		return errors.New("orbstack: refusing delete with empty machine ID")
 	}
-	if _, err := c.findByID(ctx, machineID); err != nil {
+	m, err := c.findByID(ctx, machineID)
+	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil // already absent; delete is idempotent
 		}
 		return err
 	}
+	// Lift the disk quota on the machine's current name before the rename.
+	// A machine at its disk_bytes quota cannot even be renamed (btrfs needs
+	// headroom to rewrite metadata), so a lift placed after the rename never
+	// runs on exactly the machines that need it. config-set is name-addressed
+	// while rename is ID-addressed, so the lift must use the pre-rename name.
+	// Setting the limit to 0 (no limit) also gives btrfs the space it needs to
+	// destroy subvolumes at delete time. The machine is about to be deleted,
+	// so the removed cap has no lasting effect. Best effort: a machine below
+	// its quota deletes fine without the lift, and a stuck machine surfaces
+	// the underlying ENOSPC from the rename or delete error.
+	_, _ = c.runOutput(ctx, "config", "set", "machine."+m.Name+".disk_bytes", "0")
 	fresh, err := randomMachineName("garm-del")
 	if err != nil {
 		return fmt.Errorf("generating deletion name: %w", err)
@@ -272,7 +284,7 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 	if err := c.Rename(ctx, machineID, fresh); err != nil {
 		return fmt.Errorf("binding deletion name to machine %s: %w", machineID, err)
 	}
-	m, err := c.findByID(ctx, machineID)
+	m, err = c.findByID(ctx, machineID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -284,16 +296,6 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 	// unverified name.
 	if m.Name != fresh {
 		return fmt.Errorf("machine %s renamed concurrently (have %q, want our fresh binding %q); aborting delete", machineID, m.Name, fresh)
-	}
-	// Remove the disk quota before the destructive delete: a machine at
-	// its disk_bytes quota cannot be cleaned up by btrfs (ENOSPC during
-	// subvolume deletion), which would leak the machine and its
-	// max-runners slot. Setting the limit to 0 (no limit) gives btrfs the
-	// space it needs to destroy subvolumes regardless of the machine's
-	// original quota. The machine is about to be deleted, so the removed
-	// cap has no lasting effect.
-	if _, err := c.runOutput(ctx, "config", "set", "machine."+fresh+".disk_bytes", "0"); err != nil {
-		return fmt.Errorf("removing disk quota for deletion of machine %s: %w", machineID, err)
 	}
 	_, err = c.runOutput(ctx, "delete", "--force", fresh)
 	return err
