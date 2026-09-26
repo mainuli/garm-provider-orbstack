@@ -329,7 +329,7 @@ step 'buildx docker-container native snapshotter'
 # instead of overlaying) works. This file is read by buildx when creating
 # docker-container builders without an explicit --buildkitd-config, which is
 # how docker/setup-buildx-action creates its builders.
-install -d -m 0755 -o runner -g runner /home/runner/.docker/buildx
+install -d -m 0755 -o runner -g runner /home/runner/.docker /home/runner/.docker/buildx
 printf '[worker.oci]\nsnapshotter = "native"\n' > /home/runner/.docker/buildx/buildkitd.default.toml
 chown runner:runner /home/runner/.docker/buildx/buildkitd.default.toml
 
