@@ -17,6 +17,12 @@ apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
     ca-certificates curl git jq tar gzip unzip build-essential sudo \
     libicu74 libssl3t64 zlib1g libkrb5-3 libcurl4t64 liblttng-ust1t64 \
     docker.io psmisc
+# overlay2 cannot manage whiteouts on OrbStack's guest filesystem (EIO
+# "failed to register layer"/unlinkat during pulls and builds on
+# node-based images), so pin dockerd to vfs before its first start. vfs
+# is slower and duplicates layer data; correctness wins.
+install -d /etc/docker
+[ -f /etc/docker/daemon.json ] || printf '{"storage-driver":"vfs"}\n' > /etc/docker/daemon.json
 id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
 usermod --shell /bin/bash --append --groups docker runner
 printf '%s\n' 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/garm-runner

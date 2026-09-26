@@ -255,14 +255,23 @@ for script in \
     run_step bash -e "$installers/$script"
 done
 
-# The guest root is btrfs; overlay2 on it cannot manage whiteouts
-# (EIO "failed to register layer" during pulls) and loses native diff.
-# Reset the docker.io-era graph and pin dockerd to the native btrfs driver
-# before the upstream installer starts the new engine.
+# Docker storage on OrbStack: overlay2 cannot manage whiteouts on the
+# guest filesystem (EIO "failed to register layer"/unlinkat on pulls and
+# builds), and the btrfs driver's subvolumes are demoted by machine
+# cloning, breaking every cached image in runner clones. vfs works in
+# both the build machine and its clones at the cost of copying layer
+# data. Reset the docker.io-era graph (already vfs via prepare.sh) and
+# keep vfs for the docker-ce engine the upstream installer starts.
 systemctl stop docker.socket docker.service 2>/dev/null || true
 rm -rf /var/lib/docker
 install -d /etc/docker
-printf '{"storage-driver":"btrfs"}\n' > /etc/docker/daemon.json
+printf '{"storage-driver":"vfs"}\n' > /etc/docker/daemon.json
+
+# install-docker.sh changes the docker GID (groupmod) while the apt-started
+# daemon is running with the old group; its un-retried conditional start then
+# fails in OrbStack guests ("Job for docker.service failed"). Restart the
+# daemon after the GID change, with retries.
+sed -i 's#systemctl is-active --quiet docker.service || systemctl start docker.service#for _gd in $(seq 1 5); do systemctl restart docker.service \&\& break; echo "docker restart retry ${_gd}" >\&2; sleep 10; done#' "$installers/install-docker.sh"
 
 step 'docker engine (docker-ce replaces the transitional docker.io package)'
 run_step bash -e "$installers/install-docker.sh"
@@ -317,14 +326,10 @@ step 'final system configuration'
 # services during job package installs, which could kill a runner unit).
 [ -f /etc/needrestart/needrestart.conf ] || sed -i '/^if is_ubuntu24; then$/,/^fi$/d' "$installers/configure-system.sh"
 # configure-system.sh ends with "chmod -R 777 /opt", which crosses OrbStack's
-# read-only /opt/orbstack-guest integration mount and aborts. Restrict the
-# chmod to /opt's own filesystem.
-sed -i 's#^chmod -R 777 /opt$#find /opt -path /opt/orbstack-guest -prune -o -exec chmod 777 {} +#' "$installers/configure-system.sh"
-# install-docker.sh changes the docker GID (groupmod) while the apt-started
-# daemon is running with the old group; its un-retried conditional start then
-# fails in OrbStack guests ("Job for docker.service failed"). Restart the
-# daemon after the GID change, with retries.
-sed -i 's#systemctl is-active --quiet docker.service || systemctl start docker.service#for _gd in $(seq 1 5); do systemctl restart docker.service \&\& break; echo "docker restart retry ${_gd}" >\&2; sleep 10; done#' "$installers/install-docker.sh"
+# read-only /opt/orbstack-guest integration mount and aborts. The replacement
+# prunes that mount and skips symlinks: GNU chmod -R ignores symlink targets,
+# and /opt holds pipx venvs whose bin/python3 points at /usr/bin/python3.12.
+sed -i 's#^chmod -R 777 /opt$#find /opt -path /opt/orbstack-guest -prune -o ! -type l -exec chmod 777 {} +#' "$installers/configure-system.sh"
 run_step bash -e "$installers/configure-system.sh"
 
 rm -rf "$work"
