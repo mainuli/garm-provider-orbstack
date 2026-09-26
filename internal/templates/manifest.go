@@ -53,6 +53,9 @@ func validateManifest(m Manifest) error {
 	if strings.TrimSpace(m.OSVersion) == "" || strings.ContainsAny(m.OSVersion, "\x00\r\n") {
 		return errors.New("template manifest lacks the OrbStack-recorded OS version")
 	}
+	if m.Variant != "minimal" && m.Variant != "full" {
+		return errors.New("template manifest variant must be minimal or full")
+	}
 	if strings.TrimSpace(m.OrbStackVersion) == "" || len(m.Packages) == 0 {
 		return errors.New("template manifest lacks OrbStack or package provenance")
 	}
@@ -80,6 +83,12 @@ func LoadManifest(path string) (Manifest, error) {
 	}
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return Manifest{}, errors.New("template manifest contains trailing data")
+	}
+	// Schema 1 (v0.1.0) manifests predate the variant field; they were all
+	// built from the curated minimal recipe, so a missing variant reads as
+	// minimal and registered v0.1.0 images keep working after an upgrade.
+	if manifest.Variant == "" {
+		manifest.Variant = "minimal"
 	}
 	if err := validateManifest(manifest); err != nil {
 		return Manifest{}, err

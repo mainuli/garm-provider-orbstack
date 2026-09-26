@@ -149,6 +149,13 @@ UMask=0077
 // upstream templates may contain set -x and bearer-token curl arguments there.
 func (p *Provider) injectBootstrap(ctx context.Context, machineID string, plan bootstrapPlan) error {
 	if plan.removeCache {
+		// The upstream install script downloads the runner only when this
+		// directory is absent, so it must stay deleted. Full-variant
+		// templates seed a hosted-toolcache .env at build time; on this
+		// version-mismatch path that seed is intentionally not recreated
+		// (a present-but-empty directory would suppress the download) and
+		// setup-* actions fall back to _work/_tool until the template is
+		// rebuilt. Documented limitation of the full variant.
 		if err := p.guest(ctx, machineID, []string{"rm", "-rf", "/home/runner/actions-runner"}, nil); err != nil {
 			return err
 		}

@@ -134,7 +134,7 @@ func fixture(t *testing.T) (*Provider, *memoryMachines, params.BootstrapInstance
 	if err := state.Initialize(ctx, dir); err != nil {
 		t.Fatal(err)
 	}
-	manifest := templates.Manifest{SchemaVersion: 1, ImageID: "ubuntu-arm64-v1", MachineID: "template-id", OSVersion: "noble", RecipeSHA256: strings.Repeat("a", 64), RunnerSHA256: strings.Repeat("b", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
+	manifest := templates.Manifest{SchemaVersion: 1, ImageID: "ubuntu-arm64-v1", MachineID: "template-id", OSVersion: "noble", Variant: "minimal", RecipeSHA256: strings.Repeat("a", 64), RunnerSHA256: strings.Repeat("b", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
 	manifestPath := filepath.Join(dir, "template.json")
 	if err := templates.WriteManifest(manifestPath, manifest); err != nil {
 		t.Fatal(err)

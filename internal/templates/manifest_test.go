@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -16,7 +17,7 @@ import (
 )
 
 func validManifest() Manifest {
-	return Manifest{SchemaVersion: SchemaVersion, ImageID: "ubuntu-24.04-arm64-2.333.0-unique", MachineID: "template-id", OSVersion: "noble", RecipeSHA256: strings.Repeat("a", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", RunnerSHA256: strings.Repeat("b", 64), OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
+	return Manifest{SchemaVersion: SchemaVersion, ImageID: "ubuntu-24.04-arm64-2.333.0-unique", MachineID: "template-id", OSVersion: "noble", Variant: "minimal", RecipeSHA256: strings.Repeat("a", 64), Arch: "arm64", RunnerFilename: "actions-runner-linux-arm64-2.333.0.tar.gz", RunnerSHA256: strings.Repeat("b", 64), OrbStackVersion: "2.2.3", Packages: map[string]string{"git": "1:2.43.0"}}
 }
 
 func TestManifestValidationAndImmutability(t *testing.T) {
@@ -156,5 +157,65 @@ func TestInvalidBuildInputsDoNotAccessConfiguration(t *testing.T) {
 		if _, err := Build(context.Background(), filepath.Join(t.TempDir(), "missing.toml"), options); err == nil || strings.Contains(err.Error(), "missing.toml") {
 			t.Fatalf("invalid version/checksum not rejected before file access: %v", err)
 		}
+	}
+}
+
+// TestVariantValidation pins the full-variant contract: valid names, the
+// arm64-only pin for the official toolset, and manifest-level rejection of
+// unknown variants.
+func TestVariantValidation(t *testing.T) {
+	if err := (BuildOptions{Arch: "amd64", RunnerVersion: "2.337.0", RunnerSHA256: strings.Repeat("a", 64), Variant: "full"}).Validate(); err == nil {
+		t.Fatal("full variant must be arm64-only while pinned to the arm64 toolset")
+	}
+	if err := (BuildOptions{Arch: "arm64", RunnerVersion: "2.337.0", RunnerSHA256: strings.Repeat("a", 64), Variant: "turbo"}).Validate(); err == nil {
+		t.Fatal("unknown variant must be rejected")
+	}
+	if err := (BuildOptions{Arch: "arm64", RunnerVersion: "2.337.0", RunnerSHA256: strings.Repeat("a", 64), Variant: ""}).Validate(); err != nil {
+		t.Fatalf("empty variant must default to minimal: %v", err)
+	}
+	base := validManifest()
+	base.Variant = "ultimate"
+	if err := validateManifest(base); err == nil {
+		t.Fatal("manifest must reject unknown variant")
+	}
+	if err := validateManifest(validManifest()); err != nil {
+		t.Fatalf("minimal manifest must validate: %v", err)
+	}
+	full := validManifest()
+	full.Variant = "full"
+	full.ImageID = "ubuntu-24.04-arm64-full-2.337.0-unique"
+	if err := validateManifest(full); err != nil {
+		t.Fatalf("full manifest must validate: %v", err)
+	}
+}
+
+// TestRecipeHashCoversToolsetScript ensures the immutable recipe hash includes
+// the full-variant installer, so toolset changes can never reuse an image ID.
+func TestRecipeHashCoversToolsetScript(t *testing.T) {
+	_, _, toolset, _, err := recipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(toolset, []byte("actions/runner-images")) {
+		t.Fatal("toolset recipe script missing or wrong content")
+	}
+}
+
+// TestLoadManifestV010ShapeWithoutVariant pins upgrade compatibility: schema-1
+// manifests written by v0.1.0 (no variant key) must load as minimal variants
+// so registered images keep working after a version change.
+func TestLoadManifestV010ShapeWithoutVariant(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"schema_version":1,"image_id":"ubuntu-24.04-arm64-2.333.0-abc","machine_id":"01M","os_version":"noble","recipe_sha256":"` + strings.Repeat("a", 64) + `","arch":"arm64","runner_filename":"actions-runner-linux-arm64-2.333.0.tar.gz","runner_sha256":"` + strings.Repeat("b", 64) + `","orbstack_version":"2.2.3","packages":{"git":"1:2.43.0"}}`
+	path := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("v0.1.0-shaped manifest must load: %v", err)
+	}
+	if m.Variant != "minimal" {
+		t.Fatalf("missing variant must normalize to minimal, got %q", m.Variant)
 	}
 }
