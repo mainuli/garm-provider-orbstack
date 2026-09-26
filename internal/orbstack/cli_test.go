@@ -36,7 +36,7 @@ func TestDeleteRaisesCapBeforeForceDelete(t *testing.T) {
 		"    exit 0\n" +
 		"    ;;\n" +
 		"  delete)\n" +
-		"    if grep -q \"config.*set.*disk_bytes\" " + log + " 2>/dev/null; then\n" +
+		"    if grep -q \"config.*set.*disk_bytes 0\" " + log + " 2>/dev/null; then\n" +
 		"      exit 0\n" +
 		"    else\n" +
 		"      echo \"delete called before cap was raised\" >&2\n" +
@@ -57,7 +57,7 @@ func TestDeleteRaisesCapBeforeForceDelete(t *testing.T) {
 	lines := strings.Split(string(raw), "\n")
 	configIdx, deleteIdx := -1, -1
 	for i, line := range lines {
-		if strings.Contains(line, "config") && strings.Contains(line, "disk_bytes") {
+		if strings.Contains(line, "config") && strings.Contains(line, "disk_bytes") && strings.HasSuffix(strings.TrimSpace(line), "0") {
 			configIdx = i
 		}
 		if strings.Contains(line, "delete") {
