@@ -12,7 +12,12 @@
 # host IP). Start a full build only with a mostly unused hourly quota, and
 # never place a GitHub token in the guest: it would be sealed into the
 # template.
-exec > >(tee -a /var/log/garm-toolset-build.log) 2>&1
+# Keep stderr duped on fd 9: on failure the log's tail flows back through
+# the original stderr (which the builder captures), without holding any
+# pipe open for stray daemons.
+exec 9>&2
+exec >>/var/log/garm-toolset-build.log 2>&1
+trap 'rc=$?; [ "$rc" -eq 0 ] || tail -c 4096 /var/log/garm-toolset-build.log >&9' EXIT
 set -euo pipefail
 
 tag=$1
