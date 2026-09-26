@@ -65,6 +65,10 @@ OrbStack requires a paid license for commercial/freelance/business use. This pro
 - **Kind**: not supported (OrbStack guest `/sys` remount privilege limitation)
 - Unit suites (`go test ./...`, `go test -race ./...`), capability probe, `actionlint`, `sh -n` all pass
 
+## AI agent setup
+
+See [docs/AI-AGENT-SETUP.md](docs/AI-AGENT-SETUP.md) for a programmatic installation, operation, and uninstall guide designed for AI agents.
+
 ## License
 
 Apache-2.0 (see `LICENSE`). GARM is upstream software by Cloudbase (Apache-2.0); OrbStack is separate proprietary software.
