@@ -265,6 +265,19 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 		}
 		return err
 	}
+	// Lift the disk quota before the rename, addressed by machine ID.
+	// A machine at its disk_bytes quota cannot even be renamed (btrfs needs
+	// headroom to rewrite metadata), so a lift placed after the rename never
+	// runs on exactly the machines that need it. orbctl config-set accepts
+	// the machine ID (verified live: an ID-addressed cap is enforced, and 0
+	// removes the limit), which binds the write to this machine's identity —
+	// a concurrent rename reassigning names cannot redirect it to another
+	// machine. The removed cap also gives btrfs the space it needs to destroy
+	// subvolumes at delete time. The machine is about to be deleted, so the
+	// lifted cap has no lasting effect. Best effort: a machine below its
+	// quota deletes fine without the lift, and a stuck machine surfaces the
+	// underlying ENOSPC from the rename or delete error.
+	_, _ = c.runOutput(ctx, "config", "set", "machine."+machineID+".disk_bytes", "0")
 	fresh, err := randomMachineName("garm-del")
 	if err != nil {
 		return fmt.Errorf("generating deletion name: %w", err)
@@ -284,16 +297,6 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 	// unverified name.
 	if m.Name != fresh {
 		return fmt.Errorf("machine %s renamed concurrently (have %q, want our fresh binding %q); aborting delete", machineID, m.Name, fresh)
-	}
-	// Remove the disk quota before the destructive delete: a machine at
-	// its disk_bytes quota cannot be cleaned up by btrfs (ENOSPC during
-	// subvolume deletion), which would leak the machine and its
-	// max-runners slot. Setting the limit to 0 (no limit) gives btrfs the
-	// space it needs to destroy subvolumes regardless of the machine's
-	// original quota. The machine is about to be deleted, so the removed
-	// cap has no lasting effect.
-	if _, err := c.runOutput(ctx, "config", "set", "machine."+fresh+".disk_bytes", "0"); err != nil {
-		return fmt.Errorf("removing disk quota for deletion of machine %s: %w", machineID, err)
 	}
 	_, err = c.runOutput(ctx, "delete", "--force", fresh)
 	return err
