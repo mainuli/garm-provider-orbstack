@@ -337,4 +337,4 @@ This stops the controller, takes a backup of the database, config, secrets, and 
 | `install.sh` fails checksum | Corrupted download or MITM | Re-download; verify URL is https://github.com |
 | Runner creation fails | `garm-cli runner list` for error details | Check OrbStack is running; check `--max-runners` on the scale set |
 | Full template build 403s | `api.github.com` quota exhausted | Wait for the hourly window; or use a token (never inside the guest) |
-| Reinstall can't log in | Admin password lost | Destructive: delete DB, remove managed dirs, reinstall from scratch |
+| Reinstall can't log in | Admin password lost | Back up garm.db, then reset the admin bcrypt hash with the controller stopped (hash from htpasswd -nBC 10 admin in your own terminal; UPDATE via stdin to sqlite3, never inside the ssh command string), then recovery-login. Fallback: delete DB, remove managed dirs, reinstall from scratch |
