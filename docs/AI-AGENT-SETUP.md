@@ -280,6 +280,7 @@ This stops the controller, takes a backup of the database, config, secrets, and 
 
 ## Known limitations
 
+- **Quota-stuck runners**: a machine that fills its `disk_bytes` quota cannot be deleted (btrfs ENOSPC during subvolume cleanup). Fix: raise the cap first (`orbctl config set machine.<name>.disk_bytes 107374182400`), then delete. The provider's delete path needs this fix in a future release
 - **Docker container layers**: NOT capped by per-machine `disk_bytes` (separate btrfs subvolumes). One job can fill the shared OrbStack volume. Monitor free space; use trusted repositories only
 - **Kind clusters**: not supported (OrbStack guest `/sys` remount privilege limitation)
 - **Buildx `docker-container` driver**: works via native snapshotter (slower than overlay)
