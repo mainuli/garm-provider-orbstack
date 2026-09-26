@@ -41,6 +41,10 @@ chown runner:runner /home/runner/.docker/buildx/buildkitd.default.toml
 id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
 usermod --shell /bin/bash --append --groups docker runner
 printf '%s\n' 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/garm-runner
+# Rootless podman needs subuid/subgid ranges for the runner user
+# (upstream install-container-tools.sh sets these for the build user only)
+printf 'runner:100000:65536\n' >> /etc/subuid
+printf 'runner:100000:65536\n' >> /etc/subgid
 chmod 0440 /etc/sudoers.d/garm-runner
 visudo -cf /etc/sudoers.d/garm-runner
 systemctl enable --now docker.service
