@@ -41,7 +41,7 @@ func fakeOrbctl(t *testing.T, dir string, cfgFail bool) string {
 		"    " + cfg + "\n" +
 		"    ;;\n" +
 		"  rename)\n" +
-		"    if grep -q \"config set machine.old.disk_bytes 0\" " + log + " 2>/dev/null || [ " + boolStr(cfgFail) + " = yes ]; then\n" +
+		"    if grep -q \"config set machine.01TEST.disk_bytes 0\" " + log + " 2>/dev/null || [ " + boolStr(cfgFail) + " = yes ]; then\n" +
 		"      echo \"$3\" > " + state + "\n" +
 		"      exit 0\n" +
 		"    else\n" +
@@ -96,10 +96,10 @@ func callIndex(t *testing.T, log string, want ...string) int {
 }
 
 // TestDeleteLiftsQuotaBeforeRename proves the provider lifts the disk quota
-// on the machine's current (pre-rename) name before renaming: a machine at
+// by machine ID before renaming: a machine at
 // its disk_bytes quota cannot be renamed at all (btrfs ENOSPC), so a lift
 // placed after the rename never runs. The fake rejects rename unless
-// `config set machine.old.disk_bytes 0` precedes it.
+// `config set machine.01TEST.disk_bytes 0` precedes it.
 func TestDeleteLiftsQuotaBeforeRename(t *testing.T) {
 	dir := t.TempDir()
 	log := fakeOrbctl(t, dir, false)
@@ -108,7 +108,7 @@ func TestDeleteLiftsQuotaBeforeRename(t *testing.T) {
 	if err := c.Delete(context.Background(), "01TEST"); err != nil {
 		t.Fatalf("Delete should succeed when the quota is lifted first: %v", err)
 	}
-	lift := callIndex(t, log, "config", "set", "machine.old.disk_bytes", "0")
+	lift := callIndex(t, log, "config", "set", "machine.01TEST.disk_bytes", "0")
 	rename := callIndex(t, log, "rename")
 	del := callIndex(t, log, "delete", "--force")
 	if lift == -1 {

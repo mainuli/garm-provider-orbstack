@@ -259,24 +259,25 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 	if strings.TrimSpace(machineID) == "" {
 		return errors.New("orbstack: refusing delete with empty machine ID")
 	}
-	m, err := c.findByID(ctx, machineID)
-	if err != nil {
+	if _, err := c.findByID(ctx, machineID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil // already absent; delete is idempotent
 		}
 		return err
 	}
-	// Lift the disk quota on the machine's current name before the rename.
+	// Lift the disk quota before the rename, addressed by machine ID.
 	// A machine at its disk_bytes quota cannot even be renamed (btrfs needs
 	// headroom to rewrite metadata), so a lift placed after the rename never
-	// runs on exactly the machines that need it. config-set is name-addressed
-	// while rename is ID-addressed, so the lift must use the pre-rename name.
-	// Setting the limit to 0 (no limit) also gives btrfs the space it needs to
-	// destroy subvolumes at delete time. The machine is about to be deleted,
-	// so the removed cap has no lasting effect. Best effort: a machine below
-	// its quota deletes fine without the lift, and a stuck machine surfaces
-	// the underlying ENOSPC from the rename or delete error.
-	_, _ = c.runOutput(ctx, "config", "set", "machine."+m.Name+".disk_bytes", "0")
+	// runs on exactly the machines that need it. orbctl config-set accepts
+	// the machine ID (verified live: an ID-addressed cap is enforced, and 0
+	// removes the limit), which binds the write to this machine's identity —
+	// a concurrent rename reassigning names cannot redirect it to another
+	// machine. The removed cap also gives btrfs the space it needs to destroy
+	// subvolumes at delete time. The machine is about to be deleted, so the
+	// lifted cap has no lasting effect. Best effort: a machine below its
+	// quota deletes fine without the lift, and a stuck machine surfaces the
+	// underlying ENOSPC from the rename or delete error.
+	_, _ = c.runOutput(ctx, "config", "set", "machine."+machineID+".disk_bytes", "0")
 	fresh, err := randomMachineName("garm-del")
 	if err != nil {
 		return fmt.Errorf("generating deletion name: %w", err)
@@ -284,7 +285,7 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 	if err := c.Rename(ctx, machineID, fresh); err != nil {
 		return fmt.Errorf("binding deletion name to machine %s: %w", machineID, err)
 	}
-	m, err = c.findByID(ctx, machineID)
+	m, err := c.findByID(ctx, machineID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
