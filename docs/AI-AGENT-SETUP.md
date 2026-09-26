@@ -243,15 +243,20 @@ Only after steps 1-3, if you want to remove everything:
 
 ```sh
 # Remove any remaining runner machines (by exact name from the registry, not by prefix)
-# Check for orphans:
-orbctl list --format json | python3 -c "
+# Check the registry for any machines you created (template remove should have cleaned templates):
+cat ~/.local/share/garm-orbstack/state/registry/*.json 2>/dev/null | python3 -c "
 import json,sys
-for m in json.load(sys.stdin):
-    if m['name'].startswith('garm-runner-') or m['name'].startswith('garm-template-'):
-        print(m['name'])
+for line in sys.stdin:
+    try:
+        r = json.loads(line)
+        if r.get('machine_name'):
+            print(r['machine_name'])
+    except: pass
 "
-# Delete each listed machine by its full name
-orbctl delete --force <exact-machine-name>
+# Then check OrbStack for any machines the registry references:
+orbctl list --format json
+# Delete ONLY machines you recognize from the registry above, by exact name:
+orbctl delete --force <exact-machine-name-from-registry>
 
 # Remove managed directories
 rm -rf ~/.local/share/garm-orbstack ~/.config/garm-orbstack ~/.config/secrets/garm-orbstack
