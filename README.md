@@ -2,7 +2,7 @@
 
 A [GARM](https://github.com/cloudbase/garm) external provider that runs ephemeral GitHub Actions Linux runners as [OrbStack](https://orbstack.dev) machines on a Mac — plus the native macOS installer that runs the GARM controller as a launchd service.
 
-Status: **v0.2.2 is the stable latest release; all acceptance gates passed (restart drill waived by operator).** See *Verification status*.
+Status: **v0.2.3 is the stable latest release; all acceptance gates passed (restart drill waived by operator).** See *Verification status*.
 
 ## What this is
 
@@ -63,7 +63,7 @@ OrbStack requires a paid license for commercial/freelance/business use. This pro
 - **Gate 6**: 10-run performance timing — median end-to-end (dispatch → job start, includes clone + boot + JIT registration) **21 seconds** (min 20s, max 24s); zero package drift across all runs
 - **Disk caps**: enforced at the machine's rootfs subvolume (incompressible data hits ENOSPC at the configured limit; verified on a clone)
 - **Buildx docker-container**: works via native snapshotter (verified in real GitHub Actions jobs on both architectures)
-- **Podman rootless**: fails in CI on v0.2.2 templates (no systemd user session); the `cgroupfs` drop-in in `prepare.sh` fixes it from the next rebuild (verified with a per-job `~/.config/containers/containers.conf` override)
+- **Podman rootless**: works in v0.2.3+ templates via the `/etc/containers/containers.conf.d/garm.conf` cgroupfs drop-in (verified in a real CI job with no per-job override: `cgroupfs overlay`, whiteout build green). v0.2.2 templates require the per-job `~/.config/containers/containers.conf` override
 - **Kind**: not supported (OrbStack guest `/sys` remount privilege limitation)
 - Unit suites (`go test ./...`, `go test -race ./...`), capability probe, `actionlint`, `sh -n` all pass
 
