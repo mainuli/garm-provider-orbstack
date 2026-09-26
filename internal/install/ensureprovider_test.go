@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -109,4 +110,53 @@ func fakeLaunchctlPath(t *testing.T, log string) string {
 		t.Fatal(err)
 	}
 	return launchctl
+}
+
+// fakeSlowLaunchctl creates a launchctl stub that simulates launchd's
+// asynchronous KeepAlive removal: after a bootout, `print` still reports
+// the job loaded (pid = N) for delayMore calls, then switches to
+// "Could not find service" (exit non-zero), which launchStatus treats as
+// unloaded. This drives stopService's bounded poll.
+func fakeSlowLaunchctl(t *testing.T, log string, delayMore int) string {
+	t.Helper()
+	launchctl := filepath.Join(t.TempDir(), "launchctl-slow")
+	script := "#!/bin/sh\necho \"$@\" >> " + log + "\ncase \"$1\" in\n" +
+		"  bootout)\n    echo " + strconv.Itoa(delayMore) + " > \"$LAUNCHCTL_DELAY_FILE\"\n    ;;\n" +
+		"  print)\n    if [ -f \"$LAUNCHCTL_DELAY_FILE\" ]; then\n      n=$(cat \"$LAUNCHCTL_DELAY_FILE\")\n      if [ \"$n\" -gt 0 ]; then\n        echo $((n-1)) > \"$LAUNCHCTL_DELAY_FILE\"\n        echo 'pid = 999999'\n        exit 0\n      fi\n      echo 'Could not find service' >&2\n      exit 1\n    fi\n    echo 'pid = 999999'\n    exit 0\n    ;;\n" +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(launchctl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return launchctl
+}
+
+// TestStopServicePollsThroughSlowBootout proves the bounded poll: the fake
+// launchctl reports the job loaded for 4 more calls after bootout, then
+// reports it gone. stopService must succeed rather than refusing at the
+// first still-loaded check (the pre-fix behaviour that raced the real
+// v0.1.0→v0.2.0 upgrade).
+func TestStopServicePollsThroughSlowBootout(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "launchctl-slow.log")
+	delayFile := filepath.Join(t.TempDir(), "bootout-delay")
+	t.Setenv("LAUNCHCTL_DELAY_FILE", delayFile)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	p, err := pathsFor(home, "", "v1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p
+	launchctl := fakeSlowLaunchctl(t, log, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := stopService(ctx, launchctl); err != nil {
+		t.Fatalf("stopService must poll through the async bootout, got: %v", err)
+	}
+	// The poll must have actually cycled: at least bootout + 4 prints + a
+	// final print that errors.
+	raw, _ := os.ReadFile(log)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) < 6 {
+		t.Fatalf("expected at least 6 launchctl invocations (bootout + 5 prints), got %d:\n%s", len(lines), string(raw))
+	}
 }
