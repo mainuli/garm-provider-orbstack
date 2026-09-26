@@ -102,15 +102,13 @@ Add `--variant full` to the above. Requires a mostly unused hourly `api.github.c
 
 ## Connecting to GitHub
 
+Two paths: **org-level (preferred, least privilege)** and repo-level (the path exercised by this project's acceptance gates).
+
 ### 1. Create a GitHub App (operator action, browser required)
 
-- Go to https://github.com/settings/apps/new
-- Set any name, any homepage URL
-- **Do NOT enable webhooks** (scale sets use long-polling)
-- Permissions: Repository → Actions (Read), Administration (Read/Write), Metadata (Read)
-- Install on a **private** test repository
-- Download the `.pem` private key
-- Record the **App ID** (from the app's settings page) and **Installation ID** (from `github.com/settings/installations/<number>`)
+- **Org-level (preferred)**: create the App under the org at `https://github.com/organizations/<org>/settings/apps/new` (a user-owned App from `github.com/settings/apps/new` cannot be installed on the org). Permissions: **Organization → Self-hosted runners (Read & Write)** and **Metadata (Read)**. Install it on the organization; the Installation ID is at `github.com/organizations/<org>/settings/installations/<id>`.
+- **Repo-level**: create at `https://github.com/settings/apps/new`. Permissions: Repository → Actions (Read), Administration (Read/Write), Metadata (Read). Install on a **private** test repository; Installation ID at `github.com/settings/installations/<number>`.
+- Either way: any name, any homepage URL, **no webhooks** (scale sets use long-polling). Download the `.pem` and record App ID + Installation ID.
 
 ### 2. Import credentials
 
@@ -132,7 +130,42 @@ ssh localhost 'umask 077; mkdir -p ~/.config/secrets/garm-orbstack && cat > ~/.c
 rm ~/.config/secrets/garm-orbstack/github-app.pem
 ```
 
-### 3. Add a repository
+One controller can hold several credentials — e.g. one least-privilege App per org (`credentials add` per App), then one `organization add` per org bound to its own credential. Each installation gets its own API rate limits.
+
+### 3a. Org-level setup (preferred — least privilege)
+
+Scale sets under an org land in a GitHub runner group. **Runner groups beyond Default require an org on the Team plan (org-owner action)**: org **Settings → Actions → Runner groups → New runner group**, then add the repositories that may use it. On a Free org, omit `--runner-group` below; runners join the Default group, which by default only private repositories can use.
+
+```sh
+~/.local/bin/garm-orbstack garm-cli organization add \
+  --name <org> \
+  --credentials my-app \
+  --random-webhook-secret
+
+IMAGE_ID=$(~/.local/bin/garm-orbstack template list | python3 -c "
+import json,sys
+imgs = json.load(sys.stdin)
+print([i['image_id'] for i in imgs if i['arch']=='arm64'][0])
+")
+
+~/.local/bin/garm-orbstack garm-cli scaleset create \
+  --name orbstack-linux-arm64 \
+  --org <org> \
+  --runner-group <group> \
+  --provider-name orbstack \
+  --image "$IMAGE_ID" \
+  --flavor default \
+  --runner-install-template github_linux \
+  --os-type linux \
+  --os-arch arm64 \
+  --min-idle-runners 0 \
+  --max-runners 2 \
+  --enabled
+```
+
+The org-level permission (Self-hosted runners: Read & write) is much narrower than repo Administration. Run one test job before relying on this path — this project's gates were exercised repo-level only.
+
+### 3b. Repo-level setup (tested in acceptance gates)
 
 ```sh
 ~/.local/bin/garm-orbstack garm-cli repo add \
@@ -140,11 +173,7 @@ rm ~/.config/secrets/garm-orbstack/github-app.pem
   --name <repo> \
   --credentials my-app \
   --random-webhook-secret
-```
 
-### 4. Create a scale set
-
-```sh
 IMAGE_ID=$(~/.local/bin/garm-orbstack template list | python3 -c "
 import json,sys
 imgs = json.load(sys.stdin)
@@ -165,7 +194,7 @@ print([i['image_id'] for i in imgs if i['arch']=='arm64'][0])
   --enabled
 ```
 
-### 5. Add a workflow and trigger
+### 4. Add a workflow and trigger
 
 ```yaml
 # .github/workflows/test.yml in the test repository
@@ -173,7 +202,7 @@ name: Test
 on: [workflow_dispatch]
 jobs:
   test:
-    runs-on: orbstack-linux-arm64
+    runs-on: orbstack-linux-arm64   # the scale-set name; this bare form is what the gates verified
     steps:
       - uses: actions/checkout@v4
       - run: echo "Running on $(uname -m)"
@@ -182,6 +211,12 @@ jobs:
 ```sh
 gh workflow run test.yml --repo <owner>/<repo>
 ```
+
+### Multiple controllers or orgs on one GitHub side
+
+- **Never share a scale-set name across two GARM controllers.** GitHub identifies a scale set by name within the org; two controllers binding the same name conflict (exact failure mode untested here — keep names unique, e.g. suffix per host).
+- One controller, several orgs: one credential per org App, one `organization add` per org (see step 2). Scale-set names are scoped per org and do not collide across orgs.
+- `scaleset create --labels` adds extra labels beyond the scale-set name. Label-based routing across scale sets (e.g. one shared label on two controllers' sets) is **not verified here** — target the bare scale-set name, which is the tested pattern.
 
 ## Everyday operations
 
@@ -199,7 +234,9 @@ gh workflow run test.yml --repo <owner>/<repo>
 ~/.local/bin/garm-orbstack recover --runner-name <name> --release
 
 # Scoped garm-cli (isolated profile, installation CA)
-~/.local/bin/garm-orbstack garm-cli scaleset list --repo <owner>/<repo>
+~/.local/bin/garm-orbstack garm-cli scaleset list --org <org>        # org-level scale sets (preferred)
+~/.local/bin/garm-orbstack garm-cli runner list --org <org>
+~/.local/bin/garm-orbstack garm-cli scaleset list --repo <owner>/<repo>   # repo-level scale sets
 ~/.local/bin/garm-orbstack garm-cli runner list --repo <owner>/<repo>
 ```
 
@@ -209,14 +246,15 @@ gh workflow run test.yml --repo <owner>/<repo>
 
 ```sh
 # Disable and delete scale sets (prevents orphaned GitHub-side entities)
-~/.local/bin/garm-orbstack garm-cli scaleset list --repo <owner>/<repo>
+~/.local/bin/garm-orbstack garm-cli scaleset list --org <org>             # or --repo <owner>/<repo>
 # For each scale set ID:
 ~/.local/bin/garm-orbstack garm-cli scaleset update <id> --enabled=false
 # Wait for runners to drain, then:
 ~/.local/bin/garm-orbstack garm-cli scaleset delete <id>
 
-# Remove the repository and credentials
-~/.local/bin/garm-orbstack garm-cli repo delete <owner>/<repo>
+# Remove the org (or repository) and credentials
+~/.local/bin/garm-orbstack garm-cli organization delete <org>        # org-level setup
+~/.local/bin/garm-orbstack garm-cli repo delete <owner>/<repo>       # repo-level setup
 ~/.local/bin/garm-orbstack garm-cli github credentials delete my-app
 ```
 
