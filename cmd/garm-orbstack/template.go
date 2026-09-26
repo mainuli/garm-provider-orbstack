@@ -99,3 +99,23 @@ func runTemplateList(ctx context.Context, args []string) error {
 	}
 	return json.NewEncoder(os.Stdout).Encode(manifests)
 }
+
+func runTemplateRemove(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("template remove", flag.ContinueOnError)
+	path := flags.String("config", "", "host.toml (defaults to the installed host configuration)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("template remove takes exactly one image ID")
+	}
+	resolved, err := templateConfigPath(*path)
+	if err != nil {
+		return err
+	}
+	if err := templates.Remove(ctx, resolved, flags.Arg(0)); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "template %s removed\n", flags.Arg(0))
+	return nil
+}

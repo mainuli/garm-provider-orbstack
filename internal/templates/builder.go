@@ -19,6 +19,7 @@ import (
 	assets "github.com/mainuli/garm-provider-orbstack"
 	"github.com/mainuli/garm-provider-orbstack/internal/config"
 	"github.com/mainuli/garm-provider-orbstack/internal/orbstack"
+	"github.com/mainuli/garm-provider-orbstack/internal/state"
 )
 
 // recipeFS is rooted at the embedded recipe directory. An explicit operator
@@ -357,4 +358,76 @@ func List(ctx context.Context, host config.Host) ([]Manifest, error) {
 		result = append(result, manifest)
 	}
 	return result, nil
+}
+
+// Remove deregisters a template image and deletes its machine. It refuses
+// while any registry record still references the image (drain the pool
+// first), never deletes a machine outside the registered mapping, and
+// routes the machine deletion through the ID-addressed provider path.
+func Remove(ctx context.Context, configPath, imageID string) error {
+	if imageID == "" {
+		return errors.New("image ID is required")
+	}
+	host, err := config.LoadHost(configPath)
+	if err != nil {
+		return err
+	}
+	image, registered := host.Images[imageID]
+	if !registered {
+		return fmt.Errorf("image %s is not registered", imageID)
+	}
+	// The registration is about to authorize an irreversible delete; it must
+	// agree with its manifest, and no other image may share the machine or
+	// manifest (the shape hand edits leave behind).
+	manifest, err := LoadManifest(image.ManifestPath)
+	if err != nil {
+		return fmt.Errorf("image %s: %w", imageID, err)
+	}
+	if manifest.ImageID != imageID || manifest.MachineID != image.MachineID || manifest.Arch != image.Arch {
+		return fmt.Errorf("image %s: registration differs from its manifest; refusing to delete machine %s", imageID, image.MachineID)
+	}
+	for id, other := range host.Images {
+		if id != imageID && (other.MachineID == image.MachineID || other.ManifestPath == image.ManifestPath) {
+			return fmt.Errorf("image %s shares its machine or manifest with registered image %s; refusing", imageID, id)
+		}
+	}
+	// Serialize against in-flight clones: the provider holds this lock from
+	// template validation through orbctl clone, so a clone that started
+	// earlier makes the drain check below see its record and refuse, and a
+	// later clone blocks here, then fails before marking its intent.
+	reg, err := state.Open(ctx, host.StateDir, host.ControllerID)
+	if err != nil {
+		return err
+	}
+	templateLock, err := reg.LockTemplate(ctx, image.MachineID)
+	if err != nil {
+		return err
+	}
+	defer templateLock.Close()
+	records, err := reg.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.ImageID == imageID {
+			return fmt.Errorf("runner %s still uses image %s; drain the pool before removing the template (stale machine-less reservations: garm-orbstack recover; repoint or delete GARM scale sets naming this image)", record.RunnerName, imageID)
+		}
+	}
+	orb := orbstack.New(host.OrbctlPath)
+	if err := orb.Delete(ctx, image.MachineID); err != nil {
+		return fmt.Errorf("deleting template machine (image stays registered): %w", err)
+	}
+	if err := config.UpdateHost(configPath, func(h *config.Host) error {
+		if _, ok := h.Images[imageID]; !ok {
+			return fmt.Errorf("image %s disappeared concurrently", imageID)
+		}
+		delete(h.Images, imageID)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("machine already deleted; re-run template remove to converge (image stays registered until then): %w", err)
+	}
+	if err := os.Remove(image.ManifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("template deregistered but manifest %s remains: %w", image.ManifestPath, err)
+	}
+	return nil
 }

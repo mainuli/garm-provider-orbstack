@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/mainuli/garm-provider-orbstack/internal/config"
 	"github.com/mainuli/garm-provider-orbstack/internal/orbstack"
+	"github.com/mainuli/garm-provider-orbstack/internal/state"
 )
 
 func validManifest() Manifest {
@@ -217,5 +219,89 @@ func TestLoadManifestV010ShapeWithoutVariant(t *testing.T) {
 	}
 	if m.Variant != "minimal" {
 		t.Fatalf("missing variant must normalize to minimal, got %q", m.Variant)
+	}
+}
+
+// TestRemoveGuards pins the safety rules of template removal: unknown IDs
+// refuse, in-use images refuse via the registry snapshot.
+func TestRemoveGuards(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	manifestPath := filepath.Join(dir, "m.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"schema_version":1,"image_id":"img-a","machine_id":"01MACH","os_version":"noble","variant":"minimal","recipe_sha256":"`+strings.Repeat("a", 64)+`","arch":"arm64","runner_filename":"actions-runner-linux-arm64-2.333.0.tar.gz","runner_sha256":"`+strings.Repeat("b", 64)+`","orbstack_version":"2.2.3","packages":{"git":"1"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(home, ".config", "garm-orbstack", "host.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeHost := func(images map[string]string) {
+		var b strings.Builder
+		fmt.Fprintf(&b, "controller_id = \"8f14e45f-ceea-4671-9e6b-3f7a1d2c4b5e\"\norbctl_path = \"/bin/true\"\nstate_dir = %q\nmax_instances = 2\noperation_timeout = \"2m\"\n\n[flavors.default]\ncpus = 2\nmemory_mib = 4096\ndisk_bytes = 68719476736\n\n[images]\n", filepath.Join(dir, "state"))
+		for id, machine := range images {
+			fmt.Fprintf(&b, "  [images.%q]\n    machine_id = %q\n    manifest_path = %q\n    arch = \"arm64\"\n", id, machine, manifestPath)
+		}
+		if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeHost(map[string]string{"img-a": "01MACH"})
+	if err := Remove(context.Background(), cfgPath, "nope"); err == nil || !strings.Contains(err.Error(), "is not registered") {
+		t.Fatalf("unknown image must refuse on registration grounds, got: %v", err)
+	}
+	if err := state.Initialize(context.Background(), filepath.Join(dir, "state")); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := state.Open(context.Background(), filepath.Join(dir, "state"), "8f14e45f-ceea-4671-9e6b-3f7a1d2c4b5e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, reserved, err := reg.Reserve(context.Background(), state.Record{SchemaVersion: state.SchemaVersion, ControllerID: "8f14e45f-ceea-4671-9e6b-3f7a1d2c4b5e", PoolID: "p", RunnerName: "r1", MachineName: "m", ImageID: "img-a", Flavor: "default", Phase: state.PhaseReserved}, 4)
+	if err != nil || !reserved {
+		t.Fatalf("reserve: %v %v", err, reserved)
+	}
+	record.MachineID = "01R"
+	record.Phase = state.PhaseCreated
+	if err := reg.Save(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	// In-use image must refuse on drain grounds specifically.
+	if err := Remove(context.Background(), cfgPath, "img-a"); err == nil || !strings.Contains(err.Error(), "still uses image") {
+		t.Fatalf("in-use image must refuse on drain grounds, got: %v", err)
+	}
+	// Drain, then removal proceeds to the (unavailable here) machine
+	// deletion and fails there rather than refusing on grounds.
+	if err := reg.Remove(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	err = Remove(context.Background(), cfgPath, "img-a")
+	if err == nil || !strings.Contains(err.Error(), "deleting template machine") {
+		t.Fatalf("expected machine-deletion failure on this host, got: %v", err)
+	}
+}
+
+// TestRemoveRefusesSharedManifest pins the sibling-sharing guard: two
+// registrations pointing at one manifest must refuse before any registry or
+// OrbStack interaction.
+func TestRemoveRefusesSharedManifest(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	manifestPath := filepath.Join(dir, "m.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"schema_version":1,"image_id":"img-a","machine_id":"01MACH","os_version":"noble","variant":"minimal","recipe_sha256":"`+strings.Repeat("a", 64)+`","arch":"arm64","runner_filename":"actions-runner-linux-arm64-2.333.0.tar.gz","runner_sha256":"`+strings.Repeat("b", 64)+`","orbstack_version":"2.2.3","packages":{"git":"1"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(home, ".config", "garm-orbstack", "host.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "controller_id = \"8f14e45f-ceea-4671-9e6b-3f7a1d2c4b5e\"\norbctl_path = \"/bin/true\"\nstate_dir = %q\nmax_instances = 2\noperation_timeout = \"2m\"\n\n[flavors.default]\ncpus = 2\nmemory_mib = 4096\ndisk_bytes = 68719476736\n\n[images]\n  [images.\"img-a\"]\n    machine_id = \"01MACH\"\n    manifest_path = %q\n    arch = \"arm64\"\n  [images.\"img-b\"]\n    machine_id = \"02MACH\"\n    manifest_path = %q\n    arch = \"arm64\"\n", filepath.Join(dir, "state"), manifestPath, manifestPath)
+	if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(context.Background(), cfgPath, "img-a"); err == nil || !strings.Contains(err.Error(), "shares its machine or manifest") {
+		t.Fatalf("shared manifest must refuse, got: %v", err)
 	}
 }
