@@ -323,6 +323,16 @@ grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /home/r
 chown runner:runner /home/runner/actions-runner/.env
 chmod 0644 /home/runner/actions-runner/.env
 
+step 'buildx docker-container native snapshotter'
+# BuildKit's docker-container driver uses overlayfs internally, which is not
+# permitted on OrbStack guests. The native snapshotter (which copies layers
+# instead of overlaying) works. This file is read by buildx when creating
+# docker-container builders without an explicit --buildkitd-config, which is
+# how docker/setup-buildx-action creates its builders.
+install -d -m 0755 -o runner -g runner /home/runner/.docker/buildx
+printf '[worker.oci]\nsnapshotter = "native"\n' > /home/runner/.docker/buildx/buildkitd.default.toml
+chown runner:runner /home/runner/.docker/buildx/buildkitd.default.toml
+
 step 'prune preloaded docker images'
 # Cached images cannot survive OrbStack machine cloning under the btrfs
 # driver (subvolumes become plain directories and every create fails with
