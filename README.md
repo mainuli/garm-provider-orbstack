@@ -55,18 +55,15 @@ OrbStack requires a paid license for commercial/freelance/business use. This pro
 
 ## Verification status
 
-**v0.2.2 prerelease** — all runtime gates passed on the disposable acceptance host (OrbStack 2.2.3, darwin/arm64):
-
-- **Gates 1–3, 7–9**: unit/race/probe suites, released-binary installation, doctor cycles, authorization negatives, installer safety, artifact checksums (staging-mode: tampered/missing/mismatch all refused)
-- **Gate 4**: real GitHub Actions jobs on both architectures (ARM64 full template + AMD64 minimal, via `runs-on: orbstack-linux-arm64`/`orbstack-linux-amd64` scale sets)
-- **Gate 5**: failure/recovery drills (interrupted creates, lost responses, capacity limits, controller restarts, repeat deletes); the full host-restart drill was **waived by the operator**
-- **Gate 6**: 10-run performance timing (see release notes)
-- **Disk caps**: enforced at the machine's btrfs subvolume (verified with incompressible data)
-- **Buildx docker-container**: works via native snapshotter (verified in real jobs)
-- **Podman rootless**: works in full-variant runners (verified on clones)
+- **Gates 1–3, 7–9** (v0.2.1): unit/race/probe suites, released-binary installation, doctor cycles, authorization negatives, installer safety, artifact checksum negatives — passed
+- **Gate 4** (dev-built templates): real GitHub Actions jobs on ARM64 and AMD64 — passed
+- **Gate 5**: failure/recovery drills passed on v0.2.1; full host-restart drill **waived by the operator**
+- **Gate 6**: 10-run performance timing — in progress
+- **Disk caps**: enforced at the machine's rootfs subvolume (incompressible data hits ENOSPC at the configured limit; verified on a clone)
+- **Buildx docker-container**: works via native snapshotter (verified in real GitHub Actions jobs on both architectures)
+- **Podman rootless**: works in full-variant runners (verified on a clone with recipe-provisioned subuid ranges)
 - **Kind**: not supported (OrbStack guest `/sys` remount privilege limitation)
-
-Unit suites (`go test ./...`, `go test -race ./...`), capability probe, `actionlint`, `sh -n` all pass.
+- Unit suites (`go test ./...`, `go test -race ./...`), capability probe, `actionlint`, `sh -n` all pass
 
 ## License
 
