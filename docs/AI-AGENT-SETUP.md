@@ -4,7 +4,7 @@ This document is for AI agents (Claude, GPT, Copilot Workspace, etc.) that need 
 
 > **TTY requirement**: The installer and recovery-login prompts read the admin password only from a TTY. Piping stdin will NOT work. For non-interactive automation, use `ssh -tt` with an `expect` script, or drive a PTY directly.
 
-> **Admin password custody**: The installer never stores the GARM admin password. Both upgrade (`--confirm-version-change`) and reinstall prompt for it. The operator MUST store it in a secret manager (e.g. a password manager or `~/.config/secrets/`). Losing it means the preserved controller database cannot be logged into; the only recovery is destructive re-initialization.
+> **Admin password custody**: The installer never stores the GARM admin password. Both upgrade (`--confirm-version-change`) and reinstall prompt for it. The operator MUST store it in a secret manager (e.g. a password manager or `~/.config/secrets/`). Losing it still allows non-destructive recovery: with the controller stopped, reset the bcrypt hash in the SQLite users table (garm.db) using a hash you generate (e.g. htpasswd -nBC 10 admin), pipe the UPDATE to sqlite3 over stdin — never inside the ssh command string, the remote shell mangles $2a$ prefixes — then reinstall and recovery-login with the new password.
 
 ## Prerequisites
 
