@@ -13,10 +13,6 @@ case "$arch" in arm64) github_arch=arm64 ;; amd64) github_arch=x64 ;; *) exit 2 
 [ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ]
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=600 update
-apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
-    ca-certificates curl git jq tar gzip unzip build-essential sudo \
-    libicu74 libssl3t64 zlib1g libkrb5-3 libcurl4t64 liblttng-ust1t64 \
-    docker.io psmisc
 # overlay2 cannot manage whiteouts on OrbStack's guest filesystem (EIO
 # "failed to register layer"/unlinkat during pulls and builds on
 # node-based images). Pin the btrfs storage driver before dockerd's first
@@ -26,12 +22,22 @@ apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
 # pulls and save/load round trips inside machine clones.
 install -d /etc/docker
 [ -f /etc/docker/daemon.json ] || printf '{"storage-driver":"btrfs","features":{"containerd-snapshotter":false}}\n' > /etc/docker/daemon.json
+
+# daemon.json must exist before the docker.io postinst starts dockerd.
+apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
+    ca-certificates curl git jq tar gzip unzip build-essential sudo \
+    libicu74 libssl3t64 zlib1g libkrb5-3 libcurl4t64 liblttng-ust1t64 \
+    docker.io psmisc
 id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
 usermod --shell /bin/bash --append --groups docker runner
 printf '%s\n' 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/garm-runner
 chmod 0440 /etc/sudoers.d/garm-runner
 visudo -cf /etc/sudoers.d/garm-runner
 systemctl enable --now docker.service
+# The storage pin must be effective: a dockerd that rejects the config or
+# ignores it (containerd store on) fails here instead of shipping a
+# template whose clones hit whiteout EIO on the first node-based image.
+docker info --format '{{.Driver}}' | grep -qx btrfs
 install -d -m 0755 -o runner -g runner /home/runner/actions-runner
 curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
     "https://github.com/actions/runner/releases/download/v${runner_version}/${filename}" \

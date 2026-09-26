@@ -12,7 +12,7 @@
 # host IP). Start a full build only with a mostly unused hourly quota, and
 # never place a GitHub token in the guest: it would be sealed into the
 # template.
-exec >>/var/log/garm-toolset-build.log 2>&1
+exec > >(tee -a /var/log/garm-toolset-build.log) 2>&1
 set -euo pipefail
 
 tag=$1
@@ -171,8 +171,8 @@ SOURCES
     fi
 fi
 apt-get -o DPkg::Lock::Timeout=600 update
-# openssl provides /etc/ssl/openssl.cnf which configure-environment.sh
-# edits in place; gnupg provides gpg for the Swift key pre-import below.
+# gnupg provides gpg for the Swift key pre-import below; openssl covers
+# the 22.04-only openssl.cnf edit and harms nothing on 24.04.
 apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends wget man-db openssl gnupg
 # configure-dpkg.sh force-installs the AMD64 build of libicu70 on Ubuntu
 # 24.04 with no architecture guard; on arm64 that resolves amd64 libc
@@ -324,6 +324,9 @@ step 'prune preloaded docker images'
 # "Failed to create btrfs snapshot"); jobs pull them fresh instead.
 systemctl is-active --quiet docker || systemctl start docker
 docker system prune -a --volumes -f >/dev/null
+# The daemon logs per-image prune failures and still exits 0; any survivor
+# would break every clone's docker with snapshot errors.
+[ -z "$(docker images -aq)" ] || { echo 'cached images survived prune' >&2; exit 1; }
 systemctl stop docker docker.socket
 
 step 'official image cleanup'
