@@ -247,8 +247,8 @@ func TestRemoveGuards(t *testing.T) {
 		}
 	}
 	writeHost(map[string]string{"img-a": "01MACH"})
-	if err := Remove(context.Background(), cfgPath, "nope"); err == nil {
-		t.Fatal("unknown image must refuse")
+	if err := Remove(context.Background(), cfgPath, "nope"); err == nil || !strings.Contains(err.Error(), "is not registered") {
+		t.Fatalf("unknown image must refuse on registration grounds, got: %v", err)
 	}
 	if err := state.Initialize(context.Background(), filepath.Join(dir, "state")); err != nil {
 		t.Fatal(err)
@@ -266,9 +266,9 @@ func TestRemoveGuards(t *testing.T) {
 	if err := reg.Save(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	// In-use image must refuse.
-	if err := Remove(context.Background(), cfgPath, "img-a"); err == nil {
-		t.Fatal("in-use image must refuse removal")
+	// In-use image must refuse on drain grounds specifically.
+	if err := Remove(context.Background(), cfgPath, "img-a"); err == nil || !strings.Contains(err.Error(), "still uses image") {
+		t.Fatalf("in-use image must refuse on drain grounds, got: %v", err)
 	}
 	// Drain, then removal proceeds to the (unavailable here) machine
 	// deletion and fails there rather than refusing on grounds.

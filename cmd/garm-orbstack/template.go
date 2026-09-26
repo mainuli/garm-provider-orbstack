@@ -116,6 +116,6 @@ func runTemplateRemove(ctx context.Context, args []string) error {
 	if err := templates.Remove(ctx, resolved, flags.Arg(0)); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "template %s removed\\n", flags.Arg(0))
+	fmt.Fprintf(os.Stderr, "template %s removed\n", flags.Arg(0))
 	return nil
 }

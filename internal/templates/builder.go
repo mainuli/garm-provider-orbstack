@@ -376,13 +376,41 @@ func Remove(ctx context.Context, configPath, imageID string) error {
 	if !registered {
 		return fmt.Errorf("image %s is not registered", imageID)
 	}
-	records, err := state.Snapshot(ctx, host.StateDir, host.ControllerID)
+	// The registration is about to authorize an irreversible delete; it must
+	// agree with its manifest, and no other image may share the machine or
+	// manifest (the shape hand edits leave behind).
+	manifest, err := LoadManifest(image.ManifestPath)
+	if err != nil {
+		return fmt.Errorf("image %s: %w", imageID, err)
+	}
+	if manifest.ImageID != imageID || manifest.MachineID != image.MachineID || manifest.Arch != image.Arch {
+		return fmt.Errorf("image %s: registration differs from its manifest; refusing to delete machine %s", imageID, image.MachineID)
+	}
+	for id, other := range host.Images {
+		if id != imageID && (other.MachineID == image.MachineID || other.ManifestPath == image.ManifestPath) {
+			return fmt.Errorf("image %s shares its machine or manifest with registered image %s; refusing", imageID, id)
+		}
+	}
+	// Serialize against in-flight clones: the provider holds this lock from
+	// template validation through orbctl clone, so a clone that started
+	// earlier makes the drain check below see its record and refuse, and a
+	// later clone blocks here, then fails before marking its intent.
+	reg, err := state.Open(ctx, host.StateDir, host.ControllerID)
+	if err != nil {
+		return err
+	}
+	templateLock, err := reg.LockTemplate(ctx, image.MachineID)
+	if err != nil {
+		return err
+	}
+	defer templateLock.Close()
+	records, err := reg.Snapshot(ctx)
 	if err != nil {
 		return err
 	}
 	for _, record := range records {
 		if record.ImageID == imageID {
-			return fmt.Errorf("runner %s still uses image %s; drain the pool before removing the template", record.RunnerName, imageID)
+			return fmt.Errorf("runner %s still uses image %s; drain the pool before removing the template (stale machine-less reservations: garm-orbstack recover; repoint or delete GARM scale sets naming this image)", record.RunnerName, imageID)
 		}
 	}
 	orb := orbstack.New(host.OrbctlPath)
@@ -396,7 +424,7 @@ func Remove(ctx context.Context, configPath, imageID string) error {
 		delete(h.Images, imageID)
 		return nil
 	}); err != nil {
-		return err
+		return fmt.Errorf("machine already deleted; re-run template remove to converge (image stays registered until then): %w", err)
 	}
 	if err := os.Remove(image.ManifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("template deregistered but manifest %s remains: %w", image.ManifestPath, err)
