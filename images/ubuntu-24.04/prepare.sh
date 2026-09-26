@@ -46,6 +46,13 @@ chown runner:runner /home/runner/.docker/buildx/buildkitd.default.toml
 
 # Rootless podman (installed by the full variant) needs subordinate
 # ranges for runner; the pinned runner-images scripts add none
+# Rootless podman in CI (no user session): use cgroupfs instead of systemd
+# for cgroup management, and enable lingering so the runner user has a
+# session for scope delegation
+mkdir -p /etc/containers
+printf '[engine]\ncgroup_manager = "cgroupfs"\n' > /etc/containers/containers.conf
+loginctl enable-linger runner 2>/dev/null || true
+
 grep -q '^runner:' /etc/subuid 2>/dev/null || printf 'runner:100000:65536\n' >> /etc/subuid
 grep -q '^runner:' /etc/subgid 2>/dev/null || printf 'runner:100000:65536\n' >> /etc/subgid
 systemctl enable --now docker.service
