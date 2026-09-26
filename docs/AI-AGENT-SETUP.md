@@ -215,7 +215,8 @@ gh workflow run test.yml --repo <owner>/<repo>
 ### Multiple controllers or orgs on one GitHub side
 
 - **Never share a scale-set name across two GARM controllers.** GitHub identifies a scale set by name within the org; two controllers binding the same name conflict (exact failure mode untested here — keep names unique, e.g. suffix per host).
-- One controller, several orgs: one credential per org App, one `organization add` per org (see step 2). Scale-set names are scoped per org and do not collide across orgs.
+- One controller, several orgs: one credential per org App, one `organization add` per org (see step 2). Use **distinct scale-set names per org anyway**: the controller's database model declares scale-set name (+ runner group) unique controller-wide, with no org column, so a repeated name is not guaranteed to be accepted even though it names different orgs — untested here.
+- **Runner capacity is shared host-wide.** `--max-runners` caps one scale set, but every scale set in every org draws from the same provider-level `max_instances` cap on the Mac, first come first served. A burst in one org can starve another org's queued jobs; size `max_instances` and per-scale-set maxima accordingly.
 - `scaleset create --labels` adds extra labels beyond the scale-set name. Label-based routing across scale sets (e.g. one shared label on two controllers' sets) is **not verified here** — target the bare scale-set name, which is the tested pattern.
 
 ## Everyday operations
