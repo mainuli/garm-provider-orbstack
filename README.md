@@ -55,9 +55,18 @@ OrbStack requires a paid license for commercial/freelance/business use. This pro
 
 ## Verification status
 
-Verified on this repository's development host (OrbStack 2.2.3, darwin/arm64, Go 1.26): full capability probe (`GARM_ORBSTACK_INTEGRATION=1 go test -tags=integration ./test/integration -run TestOrbStackCapabilities` — clone semantics, per-clone identity, stdin/exit propagation, root-cgroup resource limits, guest-local Docker, CA-validated HTTPS from an isolated clone to a Mac loopback listener via `host.orb.internal`, lock inheritance across a killed helper with observed live orphaned clone), unit suites including `-race`, negative install smoke, `actionlint`, `sh -n`.
+**v0.2.2 prerelease** — all runtime gates passed on the disposable acceptance host (OrbStack 2.2.3, darwin/arm64):
 
-**Not yet verified:** gates 3–9 against a published checksummed release (real installation, real GitHub job via a scale set, failure/recovery drills, performance, repository-free target acceptance, anonymous artifact downloads). No stable release exists yet; the first candidate is published as a prerelease and promoted only after those gates pass.
+- **Gates 1–3, 7–9**: unit/race/probe suites, released-binary installation, doctor cycles, authorization negatives, installer safety, artifact checksums (staging-mode: tampered/missing/mismatch all refused)
+- **Gate 4**: real GitHub Actions jobs on both architectures (ARM64 full template + AMD64 minimal, via `runs-on: orbstack-linux-arm64`/`orbstack-linux-amd64` scale sets)
+- **Gate 5**: failure/recovery drills (interrupted creates, lost responses, capacity limits, controller restarts, repeat deletes); the full host-restart drill was **waived by the operator**
+- **Gate 6**: 10-run performance timing (see release notes)
+- **Disk caps**: enforced at the machine's btrfs subvolume (verified with incompressible data)
+- **Buildx docker-container**: works via native snapshotter (verified in real jobs)
+- **Podman rootless**: works in full-variant runners (verified on clones)
+- **Kind**: not supported (OrbStack guest `/sys` remount privilege limitation)
+
+Unit suites (`go test ./...`, `go test -race ./...`), capability probe, `actionlint`, `sh -n` all pass.
 
 ## License
 
