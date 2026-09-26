@@ -280,3 +280,28 @@ func TestRemoveGuards(t *testing.T) {
 		t.Fatalf("expected machine-deletion failure on this host, got: %v", err)
 	}
 }
+
+// TestRemoveRefusesSharedManifest pins the sibling-sharing guard: two
+// registrations pointing at one manifest must refuse before any registry or
+// OrbStack interaction.
+func TestRemoveRefusesSharedManifest(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	manifestPath := filepath.Join(dir, "m.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"schema_version":1,"image_id":"img-a","machine_id":"01MACH","os_version":"noble","variant":"minimal","recipe_sha256":"`+strings.Repeat("a", 64)+`","arch":"arm64","runner_filename":"actions-runner-linux-arm64-2.333.0.tar.gz","runner_sha256":"`+strings.Repeat("b", 64)+`","orbstack_version":"2.2.3","packages":{"git":"1"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(home, ".config", "garm-orbstack", "host.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "controller_id = \"8f14e45f-ceea-4671-9e6b-3f7a1d2c4b5e\"\norbctl_path = \"/bin/true\"\nstate_dir = %q\nmax_instances = 2\noperation_timeout = \"2m\"\n\n[flavors.default]\ncpus = 2\nmemory_mib = 4096\ndisk_bytes = 68719476736\n\n[images]\n  [images.\"img-a\"]\n    machine_id = \"01MACH\"\n    manifest_path = %q\n    arch = \"arm64\"\n  [images.\"img-b\"]\n    machine_id = \"02MACH\"\n    manifest_path = %q\n    arch = \"arm64\"\n", filepath.Join(dir, "state"), manifestPath, manifestPath)
+	if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(context.Background(), cfgPath, "img-a"); err == nil || !strings.Contains(err.Error(), "shares its machine or manifest") {
+		t.Fatalf("shared manifest must refuse, got: %v", err)
+	}
+}
