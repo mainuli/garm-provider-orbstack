@@ -1,6 +1,10 @@
 # AI Agent Setup Guide
 
-This document is for AI agents (Claude, GPT, Copilot Workspace, etc.) that need to install, operate, or uninstall garm-provider-orbstack on a macOS host. It assumes programmatic execution via shell commands with no interactive user input.
+This document is for AI agents (Claude, GPT, Copilot Workspace, etc.) that need to install, operate, or uninstall garm-provider-orbstack on a macOS host. It assumes programmatic execution via shell commands.
+
+> **TTY requirement**: The installer and recovery-login prompts read the admin password only from a TTY. Piping stdin will NOT work. For non-interactive automation, use `ssh -tt` with an `expect` script, or drive a PTY directly.
+
+> **Admin password custody**: The installer never stores the GARM admin password. Both upgrade (`--confirm-version-change`) and reinstall prompt for it. The operator MUST store it in a secret manager (e.g. a password manager or `~/.config/secrets/`). Losing it means the preserved controller database cannot be logged into; the only recovery is destructive re-initialization.
 
 ## Prerequisites
 
@@ -15,18 +19,13 @@ uname -m   # arm64 (native) or x86_64 (emulated)
 orb version          # must report >= 2.2.3
 orbctl status        # must print Running
 
-# 3. Docker context is orbstack
-docker context show  # must print orbstack
-
-# 4. Docker and Compose available
-docker version --format '{{.Server.Version}}'
-docker compose version
-
-# 5. Network access (for release downloads)
+# 3. Network access (for release downloads and guest packages)
 curl -fsSL -o /dev/null https://github.com
 ```
 
-If any check fails, stop and report the missing prerequisite. Do not attempt to install OrbStack or enable Docker — those are operator actions.
+Docker CLI and Compose are NOT required — the controller runs as a native launchd service, not in containers.
+
+If any check fails, stop and report the missing prerequisite. Do not attempt to install OrbStack — that is an operator action.
 
 ## Installation
 
@@ -41,21 +40,24 @@ This automatically:
 3. Runs `garm-orbstack version` (must match the requested version)
 4. Invokes `garm-orbstack install`
 
-The installer will prompt for a GARM admin username, email, and password (interactive TTY required). If running non-interactively, pre-answer via stdin:
+The installer prompts for a GARM admin username, email, and password via TTY. For expect-based automation:
 
 ```sh
-# For expect-style automation, the prompts are:
+# The prompts appear in this order:
 #   Username: (any string, e.g. "admin")
 #   Email:    (must contain @, e.g. "agent@localhost")
 #   Password: (typed twice, must meet zxcvbn strength)
+#
+# Example expect pattern (NEVER write the password to disk):
+# expect -re {Username} { send -- "admin\r"; exp_continue }
+# expect -re {Password} { send -- "$env(GARM_PW)\r"; exp_continue }
 ```
 
-After installation completes, the CLI is at `~/.local/bin/garm-orbstack`.
+After installation, the CLI is at `~/.local/bin/garm-orbstack`.
 
 ## Post-install verification
 
 ```sh
-# Doctor must exit 0 (with a template) or 2 (no template yet)
 ~/.local/bin/garm-orbstack doctor
 echo "exit=$?"
 # exit=0: fully operational
@@ -89,7 +91,7 @@ print(a.get('digest','').split(':',1)[-1])
 
 ### Full variant (~2-3 hours, ~30-50 GB, ubuntu-latest parity)
 
-Add `--variant full` to the above. Requires a mostly unused hourly `api.github.com` quota (~25-40 of the 60 calls/hour limit shared by your IP).
+Add `--variant full` to the above. Requires a mostly unused hourly `api.github.com` quota (~25-40 of the 60 calls/hour limit shared by your IP). Never place a GitHub token inside the guest — it would be sealed into the template.
 
 ### Verify
 
@@ -108,20 +110,13 @@ Add `--variant full` to the above. Requires a mostly unused hourly `api.github.c
 - Permissions: Repository → Actions (Read), Administration (Read/Write), Metadata (Read)
 - Install on a **private** test repository
 - Download the `.pem` private key
+- Record the **App ID** (from the app's settings page) and **Installation ID** (from `github.com/settings/installations/<number>`)
 
 ### 2. Import credentials
 
 ```sh
-# Place the key (must be owned by the installing user, mode 0600)
+# Place the key (owned by the installing user, mode 0600)
 ssh localhost 'umask 077; mkdir -p ~/.config/secrets/garm-orbstack && cat > ~/.config/secrets/garm-orbstack/github-app.pem' < ~/Downloads/<app-key>.pem
-
-# Record the App ID and Installation ID from the GitHub settings pages
-APP_ID=<from github.com/settings/apps/YOUR_APP>
-INSTALL_ID=<from github.com/settings/installations>
-
-# Add the GitHub endpoint (one-time)
-~/.local/bin/garm-orbstack garm-cli github endpoint list
-# If empty, the github.com endpoint already exists by default
 
 # Import the credential
 ~/.local/bin/garm-orbstack garm-cli github credentials add \
@@ -132,6 +127,9 @@ INSTALL_ID=<from github.com/settings/installations>
   --app-installation-id "$INSTALL_ID" \
   --private-key-path ~/.config/secrets/garm-orbstack/github-app.pem \
   --description "CI credential"
+
+# Delete the PEM after import (GARM stores it internally)
+rm ~/.config/secrets/garm-orbstack/github-app.pem
 ```
 
 ### 3. Add a repository
@@ -147,7 +145,6 @@ INSTALL_ID=<from github.com/settings/installations>
 ### 4. Create a scale set
 
 ```sh
-# Get the image ID
 IMAGE_ID=$(~/.local/bin/garm-orbstack template list | python3 -c "
 import json,sys
 imgs = json.load(sys.stdin)
@@ -168,10 +165,10 @@ print([i['image_id'] for i in imgs if i['arch']=='arm64'][0])
   --enabled
 ```
 
-### 5. Add a workflow to the test repository
+### 5. Add a workflow and trigger
 
 ```yaml
-# .github/workflows/test.yml
+# .github/workflows/test.yml in the test repository
 name: Test
 on: [workflow_dispatch]
 jobs:
@@ -182,11 +179,8 @@ jobs:
       - run: echo "Running on $(uname -m)"
 ```
 
-### 6. Trigger and verify
-
 ```sh
 gh workflow run test.yml --repo <owner>/<repo>
-# Watch: gh run watch <run-id> --repo <owner>/<repo>
 ```
 
 ## Everyday operations
@@ -211,37 +205,53 @@ gh workflow run test.yml --repo <owner>/<repo>
 
 ## Uninstallation
 
-```sh
-# Drain runners first (scale sets must be empty)
-~/.local/bin/garm-orbstack garm-cli scaleset update <id> --enabled=false
-# Wait for runners to finish and be deleted
+### Step 1: Clean up GitHub side
 
-# Uninstall (preserves DB, templates, secrets, host.toml)
+```sh
+# Disable and delete scale sets (prevents orphaned GitHub-side entities)
+~/.local/bin/garm-orbstack garm-cli scaleset list --repo <owner>/<repo>
+# For each scale set ID:
+~/.local/bin/garm-orbstack garm-cli scaleset update <id> --enabled=false
+# Wait for runners to drain, then:
+~/.local/bin/garm-orbstack garm-cli scaleset delete <id>
+
+# Remove the repository and credentials
+~/.local/bin/garm-orbstack garm-cli repo delete <owner>/<repo>
+~/.local/bin/garm-orbstack garm-cli github credentials delete my-app
+```
+
+### Step 2: Retire templates
+
+```sh
+# List and remove each template (refuses if runners still reference it)
+~/.local/bin/garm-orbstack template list
+~/.local/bin/garm-orbstack template remove <image-id>
+# Repeat for each image
+```
+
+### Step 3: Uninstall
+
+```sh
 ~/.local/bin/garm-orbstack uninstall
 ```
 
-What uninstall removes:
-- The launchd LaunchAgent (`dev.orbstack.garm`)
-- Installed release binaries and the `~/.local/bin/garm-orbstack` symlink
-- The isolated garm-cli profile home
+This removes the launchd LaunchAgent, installed binaries, and the `~/.local/bin/garm-orbstack` symlink. It preserves the controller database, registry, secrets, and host configuration.
 
-What uninstall **preserves**:
-- Controller database (`~/.local/share/garm-orbstack/state/garm.db`)
-- Runner registry
-- Template machines and their manifests
-- Secrets and TLS certificates (`~/.config/secrets/garm-orbstack/`)
-- Host configuration (`~/.config/garm-orbstack/host.toml`)
+### Step 4 (optional): Full cleanup
 
-To fully clean up after uninstall:
+Only after steps 1-3, if you want to remove everything:
 
 ```sh
-# Remove template machines
+# Remove any remaining runner machines (by exact name from the registry, not by prefix)
+# Check for orphans:
 orbctl list --format json | python3 -c "
 import json,sys
 for m in json.load(sys.stdin):
-    if m['name'].startswith('garm-template-'):
+    if m['name'].startswith('garm-runner-') or m['name'].startswith('garm-template-'):
         print(m['name'])
-" | xargs -I{} orbctl delete --force {}
+"
+# Delete each listed machine by its full name
+orbctl delete --force <exact-machine-name>
 
 # Remove managed directories
 rm -rf ~/.local/share/garm-orbstack ~/.config/garm-orbstack ~/.config/secrets/garm-orbstack
@@ -253,7 +263,15 @@ rm -rf ~/.local/share/garm-orbstack ~/.config/garm-orbstack ~/.config/secrets/ga
 sh install.sh --version v0.2.2
 ```
 
-The installer detects the preserved database and uses recovery login (never re-initializes). You will be prompted for the existing admin password.
+The installer detects the preserved database and prompts for recovery login (the existing admin password, via TTY). It never re-initializes the database.
+
+## Upgrading
+
+```sh
+sh install.sh --version v0.2.3 --confirm-version-change
+```
+
+This stops the controller, takes a backup of the database, config, secrets, and registry, then upgrades. The admin password is prompted via TTY.
 
 ## Known limitations
 
@@ -271,5 +289,6 @@ The installer detects the preserved database and uses recovery login (never re-i
 | Doctor exits 2 | `template list` is empty | Build a template |
 | Jobs stay queued | `garm-cli scaleset list` — image points to a removed template | Rebuild or repoint the scale set |
 | `install.sh` fails checksum | Corrupted download or MITM | Re-download; verify URL is https://github.com |
-| Runner creation fails | `garm-cli runner list` for error details | Check OrbStack is running; check `max_instances` |
-| Full template build 403s | `api.github.com` quota exhausted | Wait for the hourly window; or use a token (not in the guest) |
+| Runner creation fails | `garm-cli runner list` for error details | Check OrbStack is running; check `--max-runners` on the scale set |
+| Full template build 403s | `api.github.com` quota exhausted | Wait for the hourly window; or use a token (never inside the guest) |
+| Reinstall can't log in | Admin password lost | Destructive: delete DB, remove managed dirs, reinstall from scratch |
