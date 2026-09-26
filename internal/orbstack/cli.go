@@ -285,6 +285,16 @@ func (c *Client) Delete(ctx context.Context, machineID string) error {
 	if m.Name != fresh {
 		return fmt.Errorf("machine %s renamed concurrently (have %q, want our fresh binding %q); aborting delete", machineID, m.Name, fresh)
 	}
+	// Remove the disk quota before the destructive delete: a machine at
+	// its disk_bytes quota cannot be cleaned up by btrfs (ENOSPC during
+	// subvolume deletion), which would leak the machine and its
+	// max-runners slot. Setting the limit to 0 (no limit) gives btrfs the
+	// space it needs to destroy subvolumes regardless of the machine's
+	// original quota. The machine is about to be deleted, so the removed
+	// cap has no lasting effect.
+	if _, err := c.runOutput(ctx, "config", "set", "machine."+fresh+".disk_bytes", "0"); err != nil {
+		return fmt.Errorf("removing disk quota for deletion of machine %s: %w", machineID, err)
+	}
 	_, err = c.runOutput(ctx, "delete", "--force", fresh)
 	return err
 }
