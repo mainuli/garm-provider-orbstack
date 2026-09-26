@@ -19,10 +19,13 @@ apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
     docker.io psmisc
 # overlay2 cannot manage whiteouts on OrbStack's guest filesystem (EIO
 # "failed to register layer"/unlinkat during pulls and builds on
-# node-based images), so pin dockerd to vfs before its first start. vfs
-# is slower and duplicates layer data; correctness wins.
+# node-based images). Pin the btrfs storage driver before dockerd's first
+# start; docker.io's containerd image store ignores a plain storage-driver
+# pin (it stays on overlayfs), so disable the snapshotter too. Verified on
+# OrbStack 2.2.3: btrfs driver handles whiteout builds, node-based image
+# pulls and save/load round trips inside machine clones.
 install -d /etc/docker
-[ -f /etc/docker/daemon.json ] || printf '{"storage-driver":"vfs"}\n' > /etc/docker/daemon.json
+[ -f /etc/docker/daemon.json ] || printf '{"storage-driver":"btrfs","features":{"containerd-snapshotter":false}}\n' > /etc/docker/daemon.json
 id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
 usermod --shell /bin/bash --append --groups docker runner
 printf '%s\n' 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/garm-runner

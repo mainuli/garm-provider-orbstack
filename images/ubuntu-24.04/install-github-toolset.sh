@@ -257,15 +257,16 @@ done
 
 # Docker storage on OrbStack: overlay2 cannot manage whiteouts on the
 # guest filesystem (EIO "failed to register layer"/unlinkat on pulls and
-# builds), and the btrfs driver's subvolumes are demoted by machine
-# cloning, breaking every cached image in runner clones. vfs works in
-# both the build machine and its clones at the cost of copying layer
-# data. Reset the docker.io-era graph (already vfs via prepare.sh) and
-# keep vfs for the docker-ce engine the upstream installer starts.
+# builds), verified with node-based images and whiteout builds. The btrfs
+# driver is correct here AND inside machine clones for fresh pulls, builds
+# and save/load round trips; only template-inherited cached images break
+# (OrbStack cloning turns btrfs subvolumes into plain directories), so the
+# images the upstream installer preloads are pruned before sealing and
+# jobs pull them fresh. Reset the graph before the engine swap.
 systemctl stop docker.socket docker.service 2>/dev/null || true
 rm -rf /var/lib/docker
 install -d /etc/docker
-printf '{"storage-driver":"vfs"}\n' > /etc/docker/daemon.json
+printf '{"storage-driver":"btrfs","features":{"containerd-snapshotter":false}}\n' > /etc/docker/daemon.json
 
 # install-docker.sh changes the docker GID (groupmod) while the apt-started
 # daemon is running with the old group; its un-retried conditional start then
@@ -316,6 +317,14 @@ install -d -m 0755 /home/runner/actions-runner
 grep -v '^PATH=' /etc/environment | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' > /home/runner/actions-runner/.env
 chown runner:runner /home/runner/actions-runner/.env
 chmod 0644 /home/runner/actions-runner/.env
+
+step 'prune preloaded docker images'
+# Cached images cannot survive OrbStack machine cloning under the btrfs
+# driver (subvolumes become plain directories and every create fails with
+# "Failed to create btrfs snapshot"); jobs pull them fresh instead.
+systemctl is-active --quiet docker || systemctl start docker
+docker system prune -a --volumes -f >/dev/null
+systemctl stop docker docker.socket
 
 step 'official image cleanup'
 run_step bash -e "$installers/cleanup.sh"
