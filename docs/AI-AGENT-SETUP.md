@@ -31,7 +31,7 @@ If any check fails, stop and report the missing prerequisite. Do not attempt to 
 
 ```sh
 # Download and verify the release
-sh install.sh --version v0.2.2
+sh install.sh --version v0.2.3
 ```
 
 This automatically:
@@ -304,7 +304,7 @@ rm -rf ~/.local/share/garm-orbstack ~/.config/garm-orbstack ~/.config/secrets/ga
 ## Reinstalling after uninstall
 
 ```sh
-sh install.sh --version v0.2.2
+sh install.sh --version v0.2.3
 ```
 
 The installer detects the preserved database and prompts for recovery login (the existing admin password, via TTY). It never re-initializes the database.
