@@ -39,7 +39,7 @@ Runners reach the controller at `https://host.orb.internal:9997`; the controller
 
 ## Layout
 
-- `cmd/garm-orbstack` — operator CLI: `install`, `doctor`, `template build|list`, `recover`, `garm-cli`, `uninstall`, `version`
+- `cmd/garm-orbstack` — operator CLI: `install`, `doctor`, `template build|list|remove`, `recover`, `garm-cli`, `uninstall`, `version`
 - `cmd/garm-provider-orbstack` — the external provider GARM executes
 - `internal/orbstack` — the sole `orbctl` adapter
 - `internal/state` — runner registry (records, locks, snapshots)
